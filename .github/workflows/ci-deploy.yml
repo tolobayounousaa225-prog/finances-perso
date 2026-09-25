@@ -1,10 +1,14 @@
-# À chaque push : lance les tests. Sur la branche main, si les tests passent,
-# copie le code sur le VPS Contabo et relance les conteneurs Docker.
+# À chaque push : lance les tests. Sur la branche main, si les tests passent :
+#   - le frontend est publié sur GitHub Pages ;
+#   - le backend est copié sur le VPS Contabo et les conteneurs Docker sont relancés.
 #
-# Secrets à créer dans GitHub (Settings > Secrets and variables > Actions) :
-#   VPS_HOST     adresse IP du VPS Contabo
-#   VPS_USER     utilisateur SSH (ex. deploy)
-#   VPS_SSH_KEY  clé privée SSH autorisée sur le VPS
+# Configuration dans GitHub (Settings > Secrets and variables > Actions) :
+#   Variables : API_URL           adresse HTTPS de l'API (ex. https://api.12-34-56-78.sslip.io)
+#               DEPLOIEMENT_ACTIF true pour activer le déploiement du backend
+#   Secrets   : VPS_HOST          adresse IP du VPS
+#               VPS_USER          utilisateur SSH (deploy)
+#               VPS_SSH_KEY       clé privée SSH autorisée sur le VPS
+# Et Settings > Pages > Source : « GitHub Actions ».
 name: Tests et déploiement
 
 on:
@@ -22,7 +26,28 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: pytest -q
 
-  deploiement:
+  frontend:
+    needs: tests
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.API_URL != ''
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploiement.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Indiquer au frontend l'adresse de l'API
+        run: echo "window.API_URL = \"${{ vars.API_URL }}\";" > frontend/config.js
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend
+      - id: deploiement
+        uses: actions/deploy-pages@v4
+
+  backend:
     needs: tests
     if: github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.DEPLOIEMENT_ACTIF == 'true'
     runs-on: ubuntu-latest
@@ -46,3 +71,5 @@ jobs:
             cd /opt/finances-perso
             docker compose up -d --build
             docker image prune -f
+            sleep 5
+            docker compose exec -T app python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"
