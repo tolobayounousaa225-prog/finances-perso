@@ -71,7 +71,7 @@ Sans configuration, les emails sont **simulés** : ils s'affichent dans les logs
 ```
 Navigateur ──► https://tolobayounousaa225-prog.github.io/finances-perso/   (GitHub Pages : HTML/JS)
      │
-     └── appels /api ──► https://api.<IP>.sslip.io   (VPS : Caddy ou Nginx ──► conteneur FastAPI + SQLite)
+     └── appels /api ──► https://api.<IP>.sslip.io   (VPS : Caddy ──► conteneur FastAPI + SQLite)
 ```
 
 Une fois configuré, **chaque push sur `main` lance les tests puis met à jour le frontend ET le backend tout seuls**.
@@ -100,6 +100,7 @@ Pars du modèle `.env.example` et remplis :
 - `FRONTEND_ORIGINS` et `APP_URL` : `https://tolobayounousaa225-prog.github.io` et `https://tolobayounousaa225-prog.github.io/finances-perso/` ;
 - le mode HTTPS :
   - **ports 80/443 libres** : `COMPOSE_PROFILES=caddy`, et c'est tout ;
+  - **Caddy déjà installé** : `COMPOSE_PROFILES=` (vide), puis suis `deploy/caddy-existant.md` ;
   - **Nginx déjà installé** : `COMPOSE_PROFILES=` (vide), puis suis les instructions en tête de `deploy/nginx-finances.conf`.
 
 ### 4. Configurer GitHub

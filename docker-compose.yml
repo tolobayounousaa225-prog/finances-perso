@@ -1,9 +1,9 @@
 # Lancement sur le VPS :  docker compose up -d --build
 #
-# Deux modes, choisis dans .env :
-#   - COMPOSE_PROFILES=caddy : les ports 80/443 sont libres, Caddy (inclus) gère le HTTPS tout seul ;
-#   - COMPOSE_PROFILES=      : un Nginx existe déjà sur le VPS, il redirige vers 127.0.0.1:PORT_API
-#                              (voir deploy/nginx-finances.conf).
+# Trois modes, choisis dans .env :
+#   - COMPOSE_PROFILES=caddy : les ports 80/443 sont libres, le Caddy inclus gère le HTTPS tout seul ;
+#   - COMPOSE_PROFILES=      : un Caddy ou un Nginx existe déjà sur le VPS et redirige vers l'API
+#                              (voir deploy/caddy-existant.md ou deploy/nginx-finances.conf).
 services:
   app:
     build: .
@@ -15,6 +15,9 @@ services:
       - "127.0.0.1:${PORT_API:-8000}:8000"   # accessible seulement depuis le VPS lui-même
     volumes:
       - donnees:/data                        # la base SQLite survit aux redéploiements
+    networks:
+      default:
+        aliases: [finances-api]              # nom joignable par un Caddy existant en conteneur
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
@@ -35,6 +38,10 @@ services:
       - caddy_data:/data
     depends_on:
       - app
+
+networks:
+  default:
+    name: finances-perso                     # nom fixe : un Caddy existant peut s'y connecter
 
 volumes:
   donnees:
