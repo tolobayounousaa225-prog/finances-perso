@@ -6,26 +6,31 @@ revenus, dépenses catégorisées automatiquement, budgets, recommandations, jou
 import csv
 import io
 import json
+import logging
 import os
-from calendar import monthrange
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import date
 from typing import List, Literal, Optional
 
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from auth import creer_token, get_current_user, hacher, verifier
 from categorisation import CATEGORIES_PAR_DEFAUT, categoriser, mot_cle_a_apprendre
-from database import Base, engine, get_db
+from database import Base, SessionLocal, engine, get_db
+from emails import envoyer_email, smtp_configure
 from models import Budget, Categorie, JournalAudit, Mouvement, RegleCategorie, User
-from recommandations import StatsMois, generer_recommandations
+from notifications import contenu_bilan, verifier_alerte_budget
+from recommandations import generer_recommandations
+from statistiques import bornes_mois, calculer_stats, mois_precedent, total
+from taches import demarrer_planificateur
+
+# Affiche dans les logs du serveur les messages de nos modules (emails, tâches planifiées…)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s : %(message)s")
 
 FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 
@@ -45,7 +50,10 @@ def initialiser_base():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     initialiser_base()  # exécuté une fois au lancement du serveur
+    planificateur = demarrer_planificateur()  # bilans mensuels automatiques
     yield
+    if planificateur:
+        planificateur.shutdown(wait=False)
 
 
 app = FastAPI(title="Finances Perso", lifespan=lifespan)
@@ -97,6 +105,11 @@ class CategorieOut(BaseModel):
     icone: str
 
 
+class Preferences(BaseModel):
+    recevoir_bilan: bool
+    recevoir_alertes: bool
+
+
 class BudgetIn(BaseModel):
     categorie_id: int
     montant_mensuel: int = Field(ge=0)  # 0 = supprimer le budget
@@ -142,34 +155,6 @@ def get_mouvement(db: Session, user: User, mouvement_id: int) -> Mouvement:
     return m
 
 
-def bornes_mois(annee: int, mois: int):
-    return date(annee, mois, 1), date(annee, mois, monthrange(annee, mois)[1])
-
-
-def mois_precedent(annee: int, mois: int, n: int = 1):
-    total = annee * 12 + (mois - 1) - n
-    return total // 12, total % 12 + 1
-
-
-def mouvements_actifs(db: Session, user: User):
-    return db.query(Mouvement).filter(Mouvement.user_id == user.id, Mouvement.archive.is_(False))
-
-
-def depenses_par_categorie(db: Session, user: User, debut: date, fin: date) -> dict:
-    rows = (db.query(Categorie.nom, func.sum(Mouvement.montant))
-            .join(Categorie, Categorie.id == Mouvement.categorie_id)
-            .filter(Mouvement.user_id == user.id, Mouvement.archive.is_(False),
-                    Mouvement.type == "depense", Mouvement.date.between(debut, fin))
-            .group_by(Categorie.nom).all())
-    return {nom: int(total) for nom, total in rows}
-
-
-def total(db: Session, user: User, type_: str, debut: date, fin: date) -> int:
-    val = (mouvements_actifs(db, user).with_entities(func.sum(Mouvement.montant))
-           .filter(Mouvement.type == type_, Mouvement.date.between(debut, fin)).scalar())
-    return int(val or 0)
-
-
 # ---------------------------------------------------------------------------
 # Authentification
 # ---------------------------------------------------------------------------
@@ -193,7 +178,15 @@ def connexion(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends
 
 @app.get("/api/me")
 def moi(user: User = Depends(get_current_user)):
-    return {"id": user.id, "nom": user.nom, "email": user.email}
+    return {"id": user.id, "nom": user.nom, "email": user.email, "recevoir_bilan": user.recevoir_bilan,
+            "recevoir_alertes": user.recevoir_alertes, "smtp_configure": smtp_configure()}
+
+
+@app.put("/api/me/preferences")
+def modifier_preferences(data: Preferences, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    user.recevoir_bilan, user.recevoir_alertes = data.recevoir_bilan, data.recevoir_alertes
+    db.commit()
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +221,8 @@ def liste_mouvements(annee: Optional[int] = None, mois: Optional[int] = None,
 
 
 @app.post("/api/mouvements", response_model=MouvementOut, status_code=201)
-def creer_mouvement(data: MouvementIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def creer_mouvement(data: MouvementIn, taches: BackgroundTasks, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
     m = Mouvement(user_id=user.id, type=data.type, montant=data.montant,
                   libelle=data.libelle.strip(), date=data.date)
     if data.type == "depense":
@@ -244,12 +238,13 @@ def creer_mouvement(data: MouvementIn, db: Session = Depends(get_db), user: User
     journaliser(db, user, "creation", "mouvement", m.id, apres=vers_dict(m))
     db.commit()
     db.refresh(m)
+    planifier_alerte(taches, user, m)
     return mouvement_out(m)
 
 
 @app.put("/api/mouvements/{mouvement_id}", response_model=MouvementOut)
-def modifier_mouvement(mouvement_id: int, data: MouvementIn, db: Session = Depends(get_db),
-                       user: User = Depends(get_current_user)):
+def modifier_mouvement(mouvement_id: int, data: MouvementIn, taches: BackgroundTasks,
+                       db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     m = get_mouvement(db, user, mouvement_id)
     if m.archive:
         raise HTTPException(400, "Un mouvement archivé ne peut plus être modifié")
@@ -271,7 +266,20 @@ def modifier_mouvement(mouvement_id: int, data: MouvementIn, db: Session = Depen
     db.refresh(m)
     journaliser(db, user, "modification", "mouvement", m.id, avant=avant, apres=vers_dict(m))
     db.commit()
+    planifier_alerte(taches, user, m)
     return mouvement_out(m)
+
+
+def planifier_alerte(taches: BackgroundTasks, user: User, m: Mouvement):
+    """Vérifie le budget APRÈS avoir répondu, pour que la saisie reste rapide
+    même si l'envoi de l'email prend quelques secondes."""
+    if m.type == "depense" and m.categorie_id:
+        taches.add_task(verifier_alerte_en_arriere_plan, user.id, m.categorie_id, m.date)
+
+
+def verifier_alerte_en_arriere_plan(user_id: int, categorie_id: int, jour: date):
+    with SessionLocal() as db:  # session dédiée : celle de la requête est déjà fermée
+        verifier_alerte_budget(db, db.get(User, user_id), categorie_id, jour)
 
 
 def apprendre(db: Session, user: User, libelle: str, categorie_id: int):
@@ -331,40 +339,6 @@ def definir_budget(data: BudgetIn, db: Session = Depends(get_db), user: User = D
 # ---------------------------------------------------------------------------
 # Tableau de bord et recommandations
 # ---------------------------------------------------------------------------
-def calculer_stats(db: Session, user: User, annee: int, mois: int) -> StatsMois:
-    debut, fin = bornes_mois(annee, mois)
-    par_categorie = depenses_par_categorie(db, user, debut, fin)
-    groupes = {c.nom: c.groupe for c in db.query(Categorie).all()}
-    par_groupe = defaultdict(int)
-    for cat, montant in par_categorie.items():
-        par_groupe[groupes[cat]] += montant
-
-    # Moyennes des 3 mois précédents (pour détecter les hausses)
-    cumul, besoins = defaultdict(int), 0
-    for n in (1, 2, 3):
-        a, m = mois_precedent(annee, mois, n)
-        for cat, montant in depenses_par_categorie(db, user, *bornes_mois(a, m)).items():
-            cumul[cat] += montant
-            if groupes[cat] == "besoin":
-                besoins += montant
-
-    epargne_id = db.query(Categorie.id).filter(Categorie.groupe == "epargne")
-    epargne_totale = (mouvements_actifs(db, user).with_entities(func.sum(Mouvement.montant))
-                      .filter(Mouvement.categorie_id.in_(epargne_id), Mouvement.date <= fin).scalar())
-
-    budgets = {b.categorie.nom: b.montant_mensuel for b in db.query(Budget).filter(Budget.user_id == user.id)}
-    return StatsMois(
-        revenus=total(db, user, "revenu", debut, fin),
-        depenses=sum(par_categorie.values()),
-        par_groupe=dict(par_groupe),
-        par_categorie=par_categorie,
-        budgets=budgets,
-        moyenne_3_mois={cat: v / 3 for cat, v in cumul.items()},
-        epargne_totale=int(epargne_totale or 0),
-        besoins_moyens=besoins / 3,
-    )
-
-
 @app.get("/api/dashboard")
 def tableau_de_bord(annee: int, mois: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     s = calculer_stats(db, user, annee, mois)
@@ -382,6 +356,22 @@ def tableau_de_bord(annee: int, mois: int, db: Session = Depends(get_db), user: 
 @app.get("/api/recommandations")
 def recommandations(annee: int, mois: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return generer_recommandations(calculer_stats(db, user, annee, mois))
+
+
+@app.post("/api/bilan/envoyer")
+def envoyer_bilan_maintenant(annee: int, mois: int, user: User = Depends(get_current_user),
+                             db: Session = Depends(get_db)):
+    """Envoie tout de suite le bilan d'un mois à l'utilisateur (bouton « M'envoyer le bilan »)."""
+    sujet, texte, html = contenu_bilan(db, user, annee, mois)
+    if not envoyer_email(user.email, sujet, texte, html):
+        raise HTTPException(502, "L'email n'a pas pu être envoyé, vérifie la configuration SMTP")
+    return {"ok": True, "simule": not smtp_configure()}
+
+
+@app.get("/api/bilan/apercu", response_class=HTMLResponse)
+def apercu_bilan(annee: int, mois: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Le bilan tel qu'il apparaîtra dans l'email."""
+    return contenu_bilan(db, user, annee, mois)[2]
 
 
 # ---------------------------------------------------------------------------

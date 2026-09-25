@@ -52,6 +52,10 @@
   .muted { color: var(--muted); font-size: 13px; }
   .chart-box { position: relative; height: 260px; }
   .hidden { display: none !important; }
+  .interrupteur { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; cursor: pointer; }
+  .interrupteur input { margin-top: 3px; width: 18px; height: 18px; }
+  .info { background: var(--bg); border-radius: 8px; padding: 10px 12px; font-size: 14px; margin-bottom: 12px; }
+  iframe.apercu { width: 100%; height: 620px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
   pre { white-space: pre-wrap; margin: 0; font-size: 12px; color: var(--muted); }
 </style>
 </head>
@@ -81,6 +85,7 @@
       <button data-onglet="mouvements">Mouvements</button>
       <button data-onglet="budgets">Budgets</button>
       <button data-onglet="journal">Journal</button>
+      <button data-onglet="parametres">Paramètres</button>
     </nav>
     <input type="month" id="mois-choisi" aria-label="Mois">
     <button class="btn secondary" id="deconnexion">Déconnexion</button>
@@ -154,6 +159,27 @@
             <tbody id="liste-journal"></tbody>
           </table>
         </div>
+      </div>
+    </section>
+    <!-- Paramètres -->
+    <section id="onglet-parametres" class="hidden">
+      <div class="card">
+        <h2>📧 Emails automatiques</h2>
+        <div class="info hidden" id="info-smtp">Envoi d'emails non configuré sur le serveur : les emails sont pour l'instant
+          simulés (affichés dans les logs du serveur). Voir la section « Emails » du README.</div>
+        <label class="interrupteur"><input type="checkbox" id="pref-bilan">
+          <span><b>Bilan mensuel</b><br><span class="muted">Le 1er de chaque mois à 8 h : revenus, dépenses, principales
+          catégories et recommandations du mois écoulé.</span></span></label>
+        <label class="interrupteur"><input type="checkbox" id="pref-alertes">
+          <span><b>Alertes de budget</b><br><span class="muted">Un email quand une catégorie atteint 80 % puis 100 % de son
+          budget mensuel (une seule fois par seuil et par mois).</span></span></label>
+        <p class="muted" id="pref-email"></p>
+      </div>
+      <div class="card">
+        <h2>Bilan du mois sélectionné</h2>
+        <p class="muted">Aperçu de l'email pour le mois choisi en haut de la page.</p>
+        <p><button class="btn" id="envoyer-bilan">M'envoyer ce bilan maintenant</button> <span class="muted" id="envoi-statut"></span></p>
+        <iframe class="apercu" id="apercu-bilan" title="Aperçu du bilan" sandbox></iframe>
       </div>
     </section>
   </main>
@@ -235,7 +261,8 @@ $("onglets").onclick = (e) => {
 $("mois-choisi").onchange = rafraichir;
 
 function rafraichir() {
-  const chargeurs = { dashboard: chargerDashboard, mouvements: chargerMouvements, budgets: chargerBudgets, journal: chargerJournal };
+  const chargeurs = { dashboard: chargerDashboard, mouvements: chargerMouvements, budgets: chargerBudgets,
+                      journal: chargerJournal, parametres: chargerParametres };
   chargeurs[ongletActif]().catch((err) => alert(err.message));
 }
 
@@ -384,6 +411,34 @@ async function chargerJournal() {
         <td><pre>${resume(j.avant)}</pre></td><td><pre>${resume(j.apres)}</pre></td></tr>`).join("")
     || '<tr><td colspan="5" class="muted">Aucune action enregistrée.</td></tr>';
 }
+
+// ---------------------------------------------------------------- Paramètres
+async function chargerParametres() {
+  const { annee, mois } = moisChoisi();
+  const moi = await api("/api/me");
+  $("pref-bilan").checked = moi.recevoir_bilan;
+  $("pref-alertes").checked = moi.recevoir_alertes;
+  $("pref-email").textContent = "Les emails sont envoyés à " + moi.email;
+  $("info-smtp").classList.toggle("hidden", moi.smtp_configure);
+  $("envoi-statut").textContent = "";
+  const r = await api(`/api/bilan/apercu?annee=${annee}&mois=${mois}`);
+  $("apercu-bilan").srcdoc = await r.text();
+}
+
+async function enregistrerPreferences() {
+  await api("/api/me/preferences", { method: "PUT", json: { recevoir_bilan: $("pref-bilan").checked, recevoir_alertes: $("pref-alertes").checked } });
+}
+$("pref-bilan").onchange = enregistrerPreferences;
+$("pref-alertes").onchange = enregistrerPreferences;
+
+$("envoyer-bilan").onclick = async () => {
+  const { annee, mois } = moisChoisi();
+  $("envoi-statut").textContent = "Envoi…";
+  try {
+    const r = await api(`/api/bilan/envoyer?annee=${annee}&mois=${mois}`, { method: "POST" });
+    $("envoi-statut").textContent = r.simule ? "Email simulé (SMTP non configuré)." : "✅ Email envoyé !";
+  } catch (err) { $("envoi-statut").textContent = err.message; }
+};
 
 // ---------------------------------------------------------------- Démarrage
 async function demarrer() {

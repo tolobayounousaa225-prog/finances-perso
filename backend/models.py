@@ -18,6 +18,8 @@ class User(Base):
     nom = Column(String, nullable=False)
     email = Column(String, unique=True, nullable=False, index=True)
     mot_de_passe_hash = Column(String, nullable=False)
+    recevoir_bilan = Column(Boolean, default=True, nullable=False)    # bilan mensuel par email
+    recevoir_alertes = Column(Boolean, default=True, nullable=False)  # alertes de budget par email
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -82,3 +84,15 @@ class JournalAudit(Base):
     avant = Column(Text, nullable=True)
     apres = Column(Text, nullable=True)
     date = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class EmailEnvoye(Base):
+    """Mémorise les emails automatiques déjà envoyés pour ne jamais les envoyer deux fois.
+    type : bilan (cle = "2026-09") ou alerte (cle = "2026-09:<categorie_id>:80" ou ":100")."""
+    __tablename__ = "emails_envoyes"
+    __table_args__ = (UniqueConstraint("user_id", "type", "cle"),)
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    type = Column(String, nullable=False)
+    cle = Column(String, nullable=False)
+    date = Column(DateTime, default=datetime.utcnow)
