@@ -1,4 +1,9 @@
 # Lancement sur le VPS :  docker compose up -d --build
+#
+# Deux modes, choisis dans .env :
+#   - COMPOSE_PROFILES=caddy : les ports 80/443 sont libres, Caddy (inclus) gère le HTTPS tout seul ;
+#   - COMPOSE_PROFILES=      : un Nginx existe déjà sur le VPS, il redirige vers 127.0.0.1:PORT_API
+#                              (voir deploy/nginx-finances.conf).
 services:
   app:
     build: .
@@ -6,8 +11,10 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: sqlite:////data/finances.db
+    ports:
+      - "127.0.0.1:${PORT_API:-8000}:8000"   # accessible seulement depuis le VPS lui-même
     volumes:
-      - donnees:/data            # la base SQLite survit aux redéploiements
+      - donnees:/data                        # la base SQLite survit aux redéploiements
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
@@ -17,6 +24,7 @@ services:
   # Caddy : reverse proxy qui obtient et renouvelle tout seul le certificat HTTPS
   caddy:
     image: caddy:2
+    profiles: ["caddy"]
     restart: unless-stopped
     ports:
       - "80:80"
