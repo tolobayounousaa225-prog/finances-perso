@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finances Perso</title>
+<script src="/static/vendor/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1d2433; --muted: #6b7385; --border: #e2e5ea;
+    --primary: #0f6e5a; --primary-text: #fff; --danger: #c0392b; --warning: #b9770e; --success: #1e8449;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12151b; --card: #1b2029; --text: #e7eaf0; --muted: #98a0b0; --border: #2c323d;
+            --primary: #2bb594; --primary-text: #0b1512; --danger: #e57368; --warning: #e0a846; --success: #52c27e; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 12px 16px;
+           display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; flex: 1; }
+  nav { display: flex; gap: 4px; flex-wrap: wrap; }
+  nav button { background: none; border: none; color: var(--muted); padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+  nav button.active { background: var(--bg); color: var(--text); font-weight: 600; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 16px; margin: 0 0 12px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .kpis { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-bottom: 16px; }
+  .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
+  .kpi small { color: var(--muted); } .kpi b { display: block; font-size: 22px; margin-top: 4px; }
+  input, select, button.btn { font: inherit; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--border);
+                              background: var(--card); color: var(--text); }
+  button.btn { background: var(--primary); color: var(--primary-text); border: none; cursor: pointer; font-weight: 600; }
+  button.btn.secondary { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+  button.lien { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 13px; }
+  form.ligne { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  form.ligne > * { flex: 1 1 140px; }
+  .suggestion { color: var(--muted); font-size: 13px; margin-top: 6px; min-height: 18px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  td.montant, th.montant { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .table-scroll { overflow-x: auto; }
+  .revenu { color: var(--success); } .depense { color: var(--danger); }
+  .reco { border-left: 4px solid var(--muted); padding: 10px 12px; margin-bottom: 8px; background: var(--bg); border-radius: 6px; }
+  .reco.alerte { border-color: var(--danger); } .reco.conseil { border-color: var(--warning); } .reco.bravo { border-color: var(--success); }
+  .reco b { display: block; margin-bottom: 2px; } .reco span { color: var(--muted); font-size: 14px; }
+  .auth { max-width: 380px; margin: 60px auto; padding: 0 16px; }
+  .auth form { display: flex; flex-direction: column; gap: 10px; }
+  .erreur { color: var(--danger); font-size: 14px; min-height: 18px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .chart-box { position: relative; height: 260px; }
+  .hidden { display: none !important; }
+  pre { white-space: pre-wrap; margin: 0; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<!-- ===================== Connexion / inscription ===================== -->
+<section id="ecran-auth" class="auth hidden">
+  <div class="card">
+    <h2 id="auth-titre">Connexion</h2>
+    <form id="form-auth">
+      <input id="auth-nom" class="hidden" placeholder="Ton nom">
+      <input id="auth-email" type="email" placeholder="Email" required>
+      <input id="auth-mdp" type="password" placeholder="Mot de passe (8 caractères min.)" required minlength="8">
+      <button class="btn" type="submit" id="auth-bouton">Se connecter</button>
+      <div class="erreur" id="auth-erreur"></div>
+    </form>
+    <p class="muted"><a href="#" id="auth-bascule">Pas encore de compte ? Créer un compte</a></p>
+  </div>
+</section>
+
+<!-- ===================== Application ===================== -->
+<div id="ecran-app" class="hidden">
+  <header>
+    <h1>💰 Finances Perso</h1>
+    <nav id="onglets">
+      <button data-onglet="dashboard" class="active">Tableau de bord</button>
+      <button data-onglet="mouvements">Mouvements</button>
+      <button data-onglet="budgets">Budgets</button>
+      <button data-onglet="journal">Journal</button>
+    </nav>
+    <input type="month" id="mois-choisi" aria-label="Mois">
+    <button class="btn secondary" id="deconnexion">Déconnexion</button>
+  </header>
+
+  <main>
+    <!-- Tableau de bord -->
+    <section id="onglet-dashboard">
+      <div class="kpis">
+        <div class="kpi"><small>Revenus du mois</small><b id="kpi-revenus" class="revenu">–</b></div>
+        <div class="kpi"><small>Dépenses du mois</small><b id="kpi-depenses" class="depense">–</b></div>
+        <div class="kpi"><small>Solde</small><b id="kpi-solde">–</b></div>
+        <div class="kpi"><small>Taux d'épargne</small><b id="kpi-epargne">–</b></div>
+      </div>
+      <div class="card"><h2>💡 Recommandations</h2><div id="recos"></div></div>
+      <div class="grid">
+        <div class="card"><h2>Dépenses par catégorie</h2><div class="chart-box"><canvas id="chart-categories"></canvas></div></div>
+        <div class="card"><h2>Évolution sur 6 mois</h2><div class="chart-box"><canvas id="chart-evolution"></canvas></div></div>
+      </div>
+    </section>
+
+    <!-- Mouvements -->
+    <section id="onglet-mouvements" class="hidden">
+      <div class="card">
+        <h2>Ajouter un revenu ou une dépense</h2>
+        <form id="form-mouvement" class="ligne">
+          <select id="mvt-type"><option value="depense">Dépense</option><option value="revenu">Revenu</option></select>
+          <input id="mvt-libelle" placeholder="Libellé (ex. Recharge Orange)" required>
+          <input id="mvt-montant" type="number" min="1" step="1" placeholder="Montant FCFA" required>
+          <input id="mvt-date" type="date" required>
+          <select id="mvt-categorie"><option value="">Catégorie automatique</option></select>
+          <button class="btn" type="submit">Ajouter</button>
+        </form>
+        <div class="suggestion" id="mvt-suggestion"></div>
+      </div>
+      <div class="card">
+        <h2>Mouvements du mois</h2>
+        <p class="muted">Change la catégorie d'une dépense si elle est mal classée : l'app s'en souviendra pour les prochaines.</p>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Date</th><th>Libellé</th><th>Catégorie</th><th class="montant">Montant</th><th></th></tr></thead>
+            <tbody id="liste-mouvements"></tbody>
+          </table>
+        </div>
+        <p><button class="btn secondary" id="export-csv">⬇ Exporter tout en CSV (Excel)</button></p>
+      </div>
+    </section>
+
+    <!-- Budgets -->
+    <section id="onglet-budgets" class="hidden">
+      <div class="card">
+        <h2>Budgets mensuels par catégorie</h2>
+        <p class="muted">Fixe un plafond : tu seras alerté à 80 % et en cas de dépassement. Laisse vide ou 0 pour aucun budget.</p>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Catégorie</th><th>Dépensé ce mois</th><th>Budget mensuel (FCFA)</th></tr></thead>
+            <tbody id="liste-budgets"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Journal -->
+    <section id="onglet-journal" class="hidden">
+      <div class="card">
+        <h2>Journal de traçabilité</h2>
+        <p class="muted">Chaque création, modification ou archivage est enregistré ici et ne peut pas être effacé.</p>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Date</th><th>Action</th><th>Élément</th><th>Avant</th><th>Après</th></tr></thead>
+            <tbody id="liste-journal"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+// ---------------------------------------------------------------- Outils
+const $ = (id) => document.getElementById(id);
+const fcfa = (n) => Math.round(n).toLocaleString("fr-FR").replace(/[  ]/g, " ") + " FCFA";
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const cssVar = (nom) => getComputedStyle(document.documentElement).getPropertyValue(nom).trim();
+let token = null;
+try { token = localStorage.getItem("token"); } catch {}
+let categories = [];
+let mouvementsAffiches = {};
+const charts = {};
+
+async function api(chemin, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (token) headers.Authorization = "Bearer " + token;
+  if (options.json !== undefined) { headers["Content-Type"] = "application/json"; options.body = JSON.stringify(options.json); }
+  const r = await fetch(chemin, { ...options, headers });
+  if (r.status === 401 && token) { deconnecter(); throw new Error("Session expirée"); }
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    const detail = Array.isArray(e.detail) ? e.detail.map((d) => d.msg).join(", ") : e.detail;
+    throw new Error(detail || "Erreur " + r.status);
+  }
+  return r.headers.get("content-type")?.includes("json") ? r.json() : r;
+}
+
+function moisChoisi() {
+  const [annee, mois] = $("mois-choisi").value.split("-").map(Number);
+  return { annee, mois };
+}
+
+// ---------------------------------------------------------------- Authentification
+let modeInscription = false;
+$("auth-bascule").onclick = (e) => {
+  e.preventDefault();
+  modeInscription = !modeInscription;
+  $("auth-titre").textContent = modeInscription ? "Créer un compte" : "Connexion";
+  $("auth-bouton").textContent = modeInscription ? "Créer mon compte" : "Se connecter";
+  $("auth-bascule").textContent = modeInscription ? "Déjà un compte ? Se connecter" : "Pas encore de compte ? Créer un compte";
+  $("auth-nom").classList.toggle("hidden", !modeInscription);
+  $("auth-nom").required = modeInscription;
+};
+
+$("form-auth").onsubmit = async (e) => {
+  e.preventDefault();
+  $("auth-erreur").textContent = "";
+  try {
+    const res = modeInscription
+      ? await api("/api/auth/register", { method: "POST", json: { nom: $("auth-nom").value, email: $("auth-email").value, mot_de_passe: $("auth-mdp").value } })
+      : await api("/api/auth/login", { method: "POST", body: new URLSearchParams({ username: $("auth-email").value, password: $("auth-mdp").value }) });
+    token = res.access_token;
+    try { localStorage.setItem("token", token); } catch {}
+    demarrer();
+  } catch (err) { $("auth-erreur").textContent = err.message; }
+};
+
+function deconnecter() {
+  token = null;
+  try { localStorage.removeItem("token"); } catch {}
+  $("ecran-app").classList.add("hidden");
+  $("ecran-auth").classList.remove("hidden");
+}
+$("deconnexion").onclick = deconnecter;
+
+// ---------------------------------------------------------------- Navigation
+let ongletActif = "dashboard";
+$("onglets").onclick = (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  ongletActif = b.dataset.onglet;
+  document.querySelectorAll("#onglets button").forEach((x) => x.classList.toggle("active", x === b));
+  document.querySelectorAll("main > section").forEach((s) => s.classList.toggle("hidden", s.id !== "onglet-" + ongletActif));
+  rafraichir();
+};
+$("mois-choisi").onchange = rafraichir;
+
+function rafraichir() {
+  const chargeurs = { dashboard: chargerDashboard, mouvements: chargerMouvements, budgets: chargerBudgets, journal: chargerJournal };
+  chargeurs[ongletActif]().catch((err) => alert(err.message));
+}
+
+// ---------------------------------------------------------------- Tableau de bord
+const couleur = (i) => `hsl(${(i * 47) % 360} 55% 52%)`;
+
+function dessiner(id, config) {
+  charts[id]?.destroy();
+  charts[id] = new Chart($(id), config);
+}
+
+async function chargerDashboard() {
+  const { annee, mois } = moisChoisi();
+  const [d, recos] = await Promise.all([
+    api(`/api/dashboard?annee=${annee}&mois=${mois}`),
+    api(`/api/recommandations?annee=${annee}&mois=${mois}`),
+  ]);
+  $("kpi-revenus").textContent = fcfa(d.revenus);
+  $("kpi-depenses").textContent = fcfa(d.depenses);
+  $("kpi-solde").textContent = fcfa(d.solde);
+  $("kpi-solde").className = d.solde >= 0 ? "revenu" : "depense";
+  $("kpi-epargne").textContent = d.revenus ? Math.round((d.par_groupe.epargne || 0) * 100 / d.revenus) + " %" : "–";
+
+  $("recos").innerHTML = recos.map((r) => `<div class="reco ${r.niveau}"><b>${esc(r.titre)}</b><span>${esc(r.message)}</span></div>`).join("")
+    || '<p class="muted">Aucune recommandation pour ce mois.</p>';
+
+  if (typeof Chart === "undefined") return;  // graphiques indisponibles hors connexion
+  const cats = Object.entries(d.par_categorie).sort((a, b) => b[1] - a[1]);
+  const texte = cssVar("--text");
+  dessiner("chart-categories", {
+    type: "doughnut",
+    data: { labels: cats.map((c) => c[0]), datasets: [{ data: cats.map((c) => c[1]), backgroundColor: cats.map((_, i) => couleur(i)) }] },
+    options: { maintainAspectRatio: false, plugins: { legend: { position: "right", labels: { color: texte } },
+               tooltip: { callbacks: { label: (c) => `${c.label} : ${fcfa(c.raw)}` } } } },
+  });
+  dessiner("chart-evolution", {
+    type: "bar",
+    data: { labels: d.evolution.map((e) => e.mois), datasets: [
+      { label: "Revenus", data: d.evolution.map((e) => e.revenus), backgroundColor: cssVar("--success") },
+      { label: "Dépenses", data: d.evolution.map((e) => e.depenses), backgroundColor: cssVar("--danger") },
+    ] },
+    options: { maintainAspectRatio: false, plugins: { legend: { labels: { color: texte } } },
+               scales: { x: { ticks: { color: texte } }, y: { ticks: { color: texte } } } },
+  });
+}
+
+// ---------------------------------------------------------------- Mouvements
+function optionsCategories(selection) {
+  return categories.map((c) => `<option value="${c.id}" ${c.id === selection ? "selected" : ""}>${c.icone} ${esc(c.nom)}</option>`).join("");
+}
+
+async function chargerMouvements() {
+  const { annee, mois } = moisChoisi();
+  const liste = await api(`/api/mouvements?annee=${annee}&mois=${mois}`);
+  mouvementsAffiches = Object.fromEntries(liste.map((m) => [m.id, m]));
+  $("liste-mouvements").innerHTML = liste.map((m) => `
+    <tr>
+      <td>${m.date.split("-").reverse().join("/")}</td>
+      <td>${esc(m.libelle)}</td>
+      <td>${m.type === "revenu" ? '<span class="muted">Revenu</span>'
+            : `<select data-id="${m.id}" class="changer-cat">${optionsCategories(m.categorie_id)}</select>
+               ${m.categorie_auto ? '<span class="muted" title="Classée automatiquement">🤖</span>' : ""}`}</td>
+      <td class="montant ${m.type}">${m.type === "revenu" ? "+" : "−"} ${fcfa(m.montant)}</td>
+      <td><button class="lien" data-archiver="${m.id}">Archiver</button></td>
+    </tr>`).join("") || '<tr><td colspan="5" class="muted">Aucun mouvement ce mois-ci.</td></tr>';
+}
+
+$("liste-mouvements").onchange = async (e) => {
+  if (!e.target.classList.contains("changer-cat")) return;
+  const m = mouvementsAffiches[e.target.dataset.id];
+  await api(`/api/mouvements/${m.id}`, { method: "PUT", json: { type: m.type, montant: m.montant, libelle: m.libelle, date: m.date, categorie_id: Number(e.target.value) } });
+  chargerMouvements();
+};
+
+$("liste-mouvements").onclick = async (e) => {
+  const id = e.target.dataset.archiver; if (!id) return;
+  if (!confirm("Archiver ce mouvement ? Il restera visible dans le journal.")) return;
+  await api(`/api/mouvements/${id}`, { method: "DELETE" });
+  chargerMouvements();
+};
+
+$("form-mouvement").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const type = $("mvt-type").value;
+    await api("/api/mouvements", { method: "POST", json: {
+      type, libelle: $("mvt-libelle").value, montant: Number($("mvt-montant").value), date: $("mvt-date").value,
+      categorie_id: type === "depense" && $("mvt-categorie").value ? Number($("mvt-categorie").value) : null,
+    } });
+    $("mvt-libelle").value = ""; $("mvt-montant").value = ""; $("mvt-suggestion").textContent = "";
+    $("mvt-libelle").focus();
+    chargerMouvements();
+  } catch (err) { alert(err.message); }
+};
+
+// Aperçu en direct de la catégorie pendant la frappe (attend 300 ms après la dernière touche)
+let minuterie;
+function apercuCategorie() {
+  clearTimeout(minuterie);
+  const libelle = $("mvt-libelle").value.trim();
+  if ($("mvt-type").value !== "depense" || !libelle) { $("mvt-suggestion").textContent = ""; return; }
+  minuterie = setTimeout(async () => {
+    const c = await api("/api/categoriser?libelle=" + encodeURIComponent(libelle));
+    $("mvt-suggestion").textContent = `Catégorie détectée : ${c.icone} ${c.nom}`;
+  }, 300);
+}
+$("mvt-libelle").oninput = apercuCategorie;
+$("mvt-type").onchange = () => {
+  $("mvt-categorie").classList.toggle("hidden", $("mvt-type").value === "revenu");
+  apercuCategorie();
+};
+
+$("export-csv").onclick = async () => {
+  const r = await api("/api/export/csv");
+  const url = URL.createObjectURL(await r.blob());
+  Object.assign(document.createElement("a"), { href: url, download: "mouvements.csv" }).click();
+  URL.revokeObjectURL(url);
+};
+
+// ---------------------------------------------------------------- Budgets
+async function chargerBudgets() {
+  const { annee, mois } = moisChoisi();
+  const [budgets, d] = await Promise.all([api("/api/budgets"), api(`/api/dashboard?annee=${annee}&mois=${mois}`)]);
+  const parCat = Object.fromEntries(budgets.map((b) => [b.categorie_id, b.montant_mensuel]));
+  $("liste-budgets").innerHTML = categories.filter((c) => c.groupe !== "epargne").map((c) => {
+    const depense = d.par_categorie[c.nom] || 0, budget = parCat[c.id];
+    const classe = budget && depense > budget ? "depense" : "";
+    return `<tr><td>${c.icone} ${esc(c.nom)}</td><td class="${classe}">${fcfa(depense)}</td>
+      <td><input type="number" min="0" step="1000" value="${budget || ""}" data-cat="${c.id}" class="budget" placeholder="Aucun"></td></tr>`;
+  }).join("");
+}
+
+$("liste-budgets").onchange = async (e) => {
+  if (!e.target.classList.contains("budget")) return;
+  await api("/api/budgets", { method: "PUT", json: { categorie_id: Number(e.target.dataset.cat), montant_mensuel: Number(e.target.value || 0) } });
+  chargerBudgets();
+};
+
+// ---------------------------------------------------------------- Journal
+const resume = (obj) => obj ? esc(Object.entries(obj).map(([k, v]) => `${k}: ${v}`).join("\n")) : "";
+
+async function chargerJournal() {
+  const lignes = await api("/api/journal");
+  $("liste-journal").innerHTML = lignes.map((j) => `
+    <tr><td>${new Date(j.date + "Z").toLocaleString("fr-FR")}</td><td>${esc(j.action)}</td><td>${esc(j.entite)} #${j.entite_id}</td>
+        <td><pre>${resume(j.avant)}</pre></td><td><pre>${resume(j.apres)}</pre></td></tr>`).join("")
+    || '<tr><td colspan="5" class="muted">Aucune action enregistrée.</td></tr>';
+}
+
+// ---------------------------------------------------------------- Démarrage
+async function demarrer() {
+  if (!token) { deconnecter(); return; }
+  try { categories = await api("/api/categories"); } catch { return; }
+  $("mvt-categorie").innerHTML = '<option value="">Catégorie automatique</option>' + optionsCategories();
+  $("ecran-auth").classList.add("hidden");
+  $("ecran-app").classList.remove("hidden");
+  rafraichir();
+}
+
+const aujourdhui = new Date();
+$("mois-choisi").value = aujourdhui.toISOString().slice(0, 7);
+$("mvt-date").value = aujourdhui.toISOString().slice(0, 10);
+demarrer();
+</script>
+</body>
+</html>

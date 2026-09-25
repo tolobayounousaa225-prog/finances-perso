@@ -1,0 +1,5 @@
+# DOMAINE est défini dans .env (ex. finances.mondomaine.com).
+# Sans nom de domaine, mettre DOMAINE=:80 pour un accès en HTTP simple par l'IP du VPS.
+{$DOMAINE} {
+    reverse_proxy app:8000
+}

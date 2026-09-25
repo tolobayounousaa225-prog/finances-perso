@@ -1,0 +1,48 @@
+# À chaque push : lance les tests. Sur la branche main, si les tests passent,
+# copie le code sur le VPS Contabo et relance les conteneurs Docker.
+#
+# Secrets à créer dans GitHub (Settings > Secrets and variables > Actions) :
+#   VPS_HOST     adresse IP du VPS Contabo
+#   VPS_USER     utilisateur SSH (ex. deploy)
+#   VPS_SSH_KEY  clé privée SSH autorisée sur le VPS
+name: Tests et déploiement
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q
+
+  deploiement:
+    needs: tests
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.DEPLOIEMENT_ACTIF == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Copier le code sur le VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: "backend,frontend,deploy,Dockerfile,docker-compose.yml,Caddyfile"
+          target: /opt/finances-perso
+      - name: Reconstruire et relancer
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd /opt/finances-perso
+            docker compose up -d --build
+            docker image prune -f
