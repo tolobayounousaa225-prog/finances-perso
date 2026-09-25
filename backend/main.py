@@ -14,7 +14,8 @@ from datetime import date
 from typing import List, Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -49,6 +50,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Finances Perso", lifespan=lifespan)
+
+# Le frontend peut être hébergé ailleurs (ex. GitHub Pages) : on autorise explicitement son adresse.
+# FRONTEND_ORIGINS = liste séparée par des virgules, ex. "https://moi.github.io"
+ORIGINES = [o.strip().rstrip("/") for o in os.environ.get("FRONTEND_ORIGINS", "").split(",") if o.strip()]
+if ORIGINES:
+    app.add_middleware(CORSMiddleware, allow_origins=ORIGINES, allow_methods=["*"],
+                       allow_headers=["Authorization", "Content-Type"])
 
 
 # ---------------------------------------------------------------------------
@@ -418,9 +426,6 @@ def health():
 # ---------------------------------------------------------------------------
 # Frontend
 # ---------------------------------------------------------------------------
-@app.get("/")
-def accueil():
-    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
-
-
-app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+# En local (et si on le souhaite en production), le backend sert aussi le frontend.
+# Monté en dernier : les routes /api/... définies plus haut restent prioritaires.
+app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

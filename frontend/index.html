@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Finances Perso</title>
-<script src="/static/vendor/chart.umd.min.js"></script>
+<script src="config.js"></script>
+<script src="vendor/chart.umd.min.js"></script>
 <style>
   :root {
     --bg: #f5f6f8; --card: #ffffff; --text: #1d2433; --muted: #6b7385; --border: #e2e5ea;
@@ -161,6 +162,8 @@
 
 <script>
 // ---------------------------------------------------------------- Outils
+// Adresse de l'API : vide = même serveur que la page. Définie dans config.js (générée au déploiement sur GitHub Pages).
+const API_URL = (window.API_URL || "").replace(/\/$/, "");
 const $ = (id) => document.getElementById(id);
 const fcfa = (n) => Math.round(n).toLocaleString("fr-FR").replace(/[  ]/g, " ") + " FCFA";
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -175,7 +178,7 @@ async function api(chemin, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (token) headers.Authorization = "Bearer " + token;
   if (options.json !== undefined) { headers["Content-Type"] = "application/json"; options.body = JSON.stringify(options.json); }
-  const r = await fetch(chemin, { ...options, headers });
+  const r = await fetch(API_URL + chemin, { ...options, headers });
   if (r.status === 401 && token) { deconnecter(); throw new Error("Session expirée"); }
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));

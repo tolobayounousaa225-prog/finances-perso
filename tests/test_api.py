@@ -106,3 +106,25 @@ def test_export_csv(client):
     ajouter(client, h, "depense", 2000, "Pharmacie")
     r = client.get("/api/export/csv", headers=h)
     assert "Pharmacie" in r.text and "Santé" in r.text
+
+
+def test_cors_frontend_github_pages(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/cors.db")
+    monkeypatch.setenv("FRONTEND_ORIGINS", "https://moi.github.io/")
+    for mod in ["main", "database", "models", "auth"]:
+        sys.modules.pop(mod, None)
+    from fastapi.testclient import TestClient
+    import main
+    with TestClient(main.app) as c:
+        preflight = {"Origin": "https://moi.github.io", "Access-Control-Request-Method": "GET",
+                     "Access-Control-Request-Headers": "authorization"}
+        r = c.options("/api/categories", headers=preflight)
+        assert r.headers["access-control-allow-origin"] == "https://moi.github.io"
+        r = c.options("/api/categories", headers={**preflight, "Origin": "https://pirate.example"})
+        assert "access-control-allow-origin" not in r.headers
+
+
+def test_frontend_servi_en_local(client):
+    assert "Finances Perso" in client.get("/").text
+    assert 'window.API_URL = ""' in client.get("/config.js").text
+    assert client.get("/vendor/chart.umd.min.js").status_code == 200
