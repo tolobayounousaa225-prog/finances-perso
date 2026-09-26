@@ -405,3 +405,14 @@ def test_envoi_smtp_reel(monkeypatch):
         sys.modules.pop("emails", None)
     assert recus and recus[0].rcpt_tos == ["awa@test.ci"]
     assert b"Subject: Test" in recus[0].content
+
+
+def test_diagnostic_emails_sans_valeurs(client, monkeypatch):
+    monkeypatch.setenv("SMTP_HOST", "smtp.gmail.com")
+    monkeypatch.setenv("SMTP_PASSWORD", "secret-a-ne-pas-montrer")
+    monkeypatch.setenv("smtp_user ", "faute-de-frappe")
+    r = client.get("/api/diagnostic")
+    e = r.json()["emails"]
+    assert e["envoi_reel"] is True and "SMTP_PASSWORD" in e["variables_presentes"]
+    assert "smtp_user " in e["variables_proches"]  # repère les noms mal écrits
+    assert "secret-a-ne-pas-montrer" not in r.text
