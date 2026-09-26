@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 # Modules rechargés à chaque test (ils lisent les variables d'environnement à l'import)
 MODULES_APP = ["main", "database", "models", "auth", "statistiques", "notifications", "taches", "emails", "temps",
-               "tracabilite", "objectifs", "recurrents", "recommandations", "bilan_pdf", "conseils_ia", "deux_facteurs"]
+               "tracabilite", "objectifs", "recurrents", "recommandations", "bilan_pdf", "conseils_ia", "deux_facteurs", "etiquettes"]
 
 
 @pytest.fixture()
@@ -744,3 +744,64 @@ def test_2fa_limite_les_essais(client):
         assert client.post("/api/auth/2fa", json={"jeton_2fa": jeton, "code": "000000"}).status_code == 401
     # Après 5 échecs, même le bon code est refusé pendant 10 minutes
     assert client.post("/api/auth/2fa", json={"jeton_2fa": jeton, "code": pyotp.TOTP(secret).now()}).status_code == 429
+
+
+# ---------------------------------------------------------------- Étiquettes et recherche
+def test_etiquettes(client):
+    from etiquettes import hashtags, normaliser_etiquette
+    assert normaliser_etiquette("#Voyage Assinie") == "voyage-assinie"
+    assert hashtags("Pagne #Mariage et #rentrée, #mariage") == ["mariage", "rentree", "mariage"]
+    h = inscrire(client)
+    m = ajouter(client, h, "depense", 25000, "Pagne pour la cérémonie #mariage", etiquettes=["Famille Koné"])
+    assert m["etiquettes"] == ["famille-kone", "mariage"]
+    ajouter(client, h, "depense", 80000, "Traiteur #mariage", d="2026-10-02")
+    ajouter(client, h, "depense", 3000, "Taxi", etiquettes=["mariage"])
+    ajouter(client, h, "depense", 5000, "Yango #rentree")
+
+    # Modifier la catégorie sans renvoyer les étiquettes : elles sont conservées
+    loisirs = next(c for c in client.get("/api/categories", headers=h).json() if c["nom"] == "Loisirs")
+    r = client.put(f"/api/mouvements/{m['id']}", headers=h,
+                   json={**{k: m[k] for k in ("type", "montant", "libelle", "date")}, "categorie_id": loisirs["id"]})
+    assert r.json()["etiquettes"] == ["famille-kone", "mariage"]
+    # Liste vide explicite : on retire les étiquettes du champ (le #mariage du libellé reste)
+    r = client.put(f"/api/mouvements/{m['id']}", headers=h,
+                   json={**{k: m[k] for k in ("type", "montant", "libelle", "date")}, "etiquettes": []})
+    assert r.json()["etiquettes"] == ["mariage"]
+
+    liste = {e["nom"]: e for e in client.get("/api/etiquettes", headers=h).json()}
+    assert liste["mariage"]["nb"] == 3 and liste["mariage"]["depenses"] == 108000
+    assert (liste["mariage"]["du"], liste["mariage"]["au"]) == ("2026-09-10", "2026-10-02")
+    assert "rentree" in liste and "famille-kone" not in liste
+
+    # Suivi d'un événement : total sur plusieurs catégories et plusieurs mois
+    res = client.get("/api/recherche?etiquette=%23Mariage", headers=h).json()
+    assert res["nb"] == 3 and res["total_depenses"] == 108000
+    assert [l["mois"] for l in res["par_mois"]] == ["2026-09", "2026-10"]
+    assert set(res["par_categorie"]) == {"Loisirs", "Autres", "Transport"}
+    assert "etiquettes" in client.get("/api/export/csv", headers=h).text.splitlines()[0]
+    # Isolation
+    autre = inscrire(client, "kofi@test.ci")
+    assert client.get("/api/etiquettes", headers=autre).json() == []
+    assert client.get("/api/recherche?etiquette=mariage", headers=autre).json()["nb"] == 0
+
+
+def test_recherche_filtres(client):
+    h = inscrire(client)
+    ajouter(client, h, "revenu", 400000, "Salaire septembre", d="2026-09-01")
+    ajouter(client, h, "depense", 3000, "Yango Plateau", d="2026-09-05")
+    ajouter(client, h, "depense", 4500, "YANGO Cocody", d="2026-10-05")
+    ajouter(client, h, "depense", 150000, "Loyer", d="2026-10-01")
+    archive = ajouter(client, h, "depense", 2000, "Yango annulé", d="2026-10-06")
+    client.delete(f"/api/mouvements/{archive['id']}", headers=h)
+
+    def chercher(**params):
+        return client.get("/api/recherche", headers=h, params=params).json()
+    assert chercher(q="yango")["nb"] == 2  # insensible à la casse, archives exclues
+    assert chercher(q="yango", archives=True)["nb"] == 3
+    assert chercher(q="yango", archives=True)["total_depenses"] == 7500  # l'archivé ne compte pas
+    assert chercher(q="yango", du="2026-10-01")["total_depenses"] == 4500
+    assert chercher(type="revenu")["total_revenus"] == 400000
+    assert chercher(montant_min=4000, montant_max=200000, type="depense")["nb"] == 2
+    transport = next(c for c in client.get("/api/categories", headers=h).json() if c["nom"] == "Transport")
+    assert chercher(categorie_id=transport["id"])["par_categorie"] == {"Transport": 7500}
+    assert chercher(au="2026-09-30")["nb"] == 2

@@ -55,6 +55,7 @@ class Mouvement(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     recurrent_id = Column(Integer, ForeignKey("recurrents.id"), nullable=True)  # créé automatiquement
     objectif_id = Column(Integer, ForeignKey("objectifs.id"), nullable=True)    # versement vers un objectif
+    etiquettes = Column(String, nullable=True)  # « mariage voyage » entouré d'espaces (voir etiquettes.py)
 
     categorie = relationship("Categorie")
 
