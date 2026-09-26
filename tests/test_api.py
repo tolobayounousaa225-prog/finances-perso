@@ -416,3 +416,27 @@ def test_diagnostic_emails_sans_valeurs(client, monkeypatch):
     assert e["envoi_reel"] is True and "SMTP_PASSWORD" in e["variables_presentes"]
     assert "smtp_user " in e["variables_proches"]  # repère les noms mal écrits
     assert "secret-a-ne-pas-montrer" not in r.text
+
+
+# ---------------------------------------------------------------------------
+# Performance : même résultat avec moins de requêtes
+# ---------------------------------------------------------------------------
+def test_statistiques_sur_plusieurs_mois(client):
+    h = inscrire(client)
+    for m in (6, 7, 8):
+        ajouter(client, h, "revenu", 200000, "Salaire", d=f"2026-{m:02d}-05")
+        ajouter(client, h, "depense", 10000, "Yango", d=f"2026-{m:02d}-06")    # Transport (besoin)
+        ajouter(client, h, "depense", 30000, "Tontine", d=f"2026-{m:02d}-07")  # Épargne
+    ajouter(client, h, "revenu", 200000, "Salaire", d="2026-09-05")
+    ajouter(client, h, "depense", 25000, "Yango", d="2026-09-06")
+    ajouter(client, h, "depense", 999999, "Yango", d="2026-02-06")  # hors fenêtre : ignoré
+
+    d = client.get("/api/dashboard?annee=2026&mois=9", headers=h).json()
+    assert d["revenus"] == 200000 and d["par_categorie"] == {"Transport": 25000}
+    assert [e["depenses"] for e in d["evolution"]] == [0, 0, 40000, 40000, 40000, 25000]
+    titres = [r["titre"] for r in d["recommandations"]]
+    assert "Hausse des dépenses « Transport »" in titres  # 25 000 contre 10 000 en moyenne
+    # épargne cumulée 90 000 ≥ 3 mois × 10 000 de dépenses essentielles
+    assert "Fonds d'urgence constitué" in titres
+    # l'ancienne route donne toujours les mêmes recommandations
+    assert client.get("/api/recommandations?annee=2026&mois=9", headers=h).json() == d["recommandations"]

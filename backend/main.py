@@ -4,11 +4,14 @@ Gestion financière personnelle multi-comptes (FCFA) :
 revenus, dépenses catégorisées automatiquement, budgets, recommandations, journal de traçabilité.
 """
 import csv
+import hashlib
 import io
 import json
 import logging
 import os
 import platform
+import re
+import time
 from contextlib import asynccontextmanager
 from datetime import date
 from typing import List, Literal, Optional
@@ -27,10 +30,10 @@ from auth import cle_secrete, creer_token, get_current_user, hacher, verifier
 from categorisation import CATEGORIES_PAR_DEFAUT, categoriser, mot_cle_a_apprendre
 from database import DATABASE_URL, Base, SessionLocal, ajouter_colonnes_manquantes, engine, get_db, preparer_schema
 from emails import envoyer_email, smtp_configure
-from models import Budget, Categorie, JournalAudit, Mouvement, RegleCategorie, User
+from models import Budget, Categorie, JournalAudit, Mouvement, Parametre, RegleCategorie, User
 from notifications import contenu_bilan, envoyer_bienvenue, envoyer_bilans_du_mois, verifier_alerte_budget
 from recommandations import generer_recommandations
-from statistiques import bornes_mois, calculer_stats, mois_precedent, total
+from statistiques import agregats, bornes_mois, calculer_stats, evolution, fenetre_6_mois
 from taches import demarrer_planificateur
 
 # Affiche dans les logs du serveur les messages de nos modules (emails, tâches planifiées…)
@@ -41,7 +44,24 @@ FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "f
 # ---------------------------------------------------------------------------
 # Démarrage : création des tables et des catégories par défaut
 # ---------------------------------------------------------------------------
+def empreinte_schema() -> str:
+    """Résumé de la structure attendue (tables, colonnes, catégories). S'il n'a pas changé depuis
+    le dernier démarrage, inutile de tout revérifier : le démarrage à froid est bien plus rapide."""
+    description = sorted(f"{t.name}.{c.name}" for t in Base.metadata.sorted_tables for c in t.columns)
+    description += sorted(CATEGORIES_PAR_DEFAUT)
+    return hashlib.sha256("|".join(description).encode()).hexdigest()
+
+
 def initialiser_base():
+    empreinte = empreinte_schema()
+    try:
+        with Session(engine) as db:
+            deja = db.get(Parametre, "schema_empreinte")
+            if deja is not None and deja.valeur == empreinte:
+                designer_superadmin(db)
+                return
+    except Exception:  # première installation : la table parametres n'existe pas encore
+        pass
     preparer_schema()
     Base.metadata.create_all(bind=engine)
     ajouter_colonnes_manquantes()
@@ -52,6 +72,12 @@ def initialiser_base():
                 db.add(Categorie(nom=nom, groupe=groupe, icone=icone))
         db.commit()
         designer_superadmin(db)
+        parametre = db.get(Parametre, "schema_empreinte")
+        if parametre is None:
+            db.add(Parametre(cle="schema_empreinte", valeur=empreinte))
+        else:
+            parametre.valeur = empreinte
+        db.commit()
 
 
 def designer_superadmin(db: Session):
@@ -400,16 +426,13 @@ def tableau_de_bord(annee: int, mois: int, db: Session = Depends(get_db), user: 
 
 
 def tableau_de_bord_de(db: Session, user: User, annee: int, mois: int) -> dict:
-    s = calculer_stats(db, user, annee, mois)
-    evolution = []
-    for n in range(5, -1, -1):
-        a, m = mois_precedent(annee, mois, n)
-        d, f = bornes_mois(a, m)
-        evolution.append({"mois": f"{a}-{m:02d}", "revenus": total(db, user, "revenu", d, f),
-                          "depenses": total(db, user, "depense", d, f)})
+    """Chiffres du mois, évolution sur 6 mois et recommandations, en 3 requêtes seulement."""
+    lignes = agregats(db, user, *fenetre_6_mois(annee, mois))
+    s = calculer_stats(db, user, annee, mois, lignes)
     return {"revenus": s.revenus, "depenses": s.depenses, "solde": s.revenus - s.depenses,
             "par_categorie": s.par_categorie, "par_groupe": s.par_groupe, "budgets": s.budgets,
-            "evolution": evolution}
+            "evolution": evolution(lignes, annee, mois),
+            "recommandations": generer_recommandations(s)}
 
 
 @app.get("/api/recommandations")
@@ -487,6 +510,9 @@ def admin_liste_utilisateurs(annee: int, mois: int, db: Session = Depends(get_db
                              admin: User = Depends(get_superadmin)):
     """Tous les comptes avec quelques chiffres clés du mois choisi."""
     debut, fin = bornes_mois(annee, mois)
+    totaux = {(uid, t): int(v or 0) for uid, t, v in db.query(Mouvement.user_id, Mouvement.type, func.sum(Mouvement.montant))
+              .filter(Mouvement.archive.is_(False), Mouvement.date.between(debut, fin))
+              .group_by(Mouvement.user_id, Mouvement.type).all()}
     nb = dict(db.query(Mouvement.user_id, func.count(Mouvement.id))
               .filter(Mouvement.archive.is_(False)).group_by(Mouvement.user_id).all())
     derniere = dict(db.query(JournalAudit.user_id, func.max(JournalAudit.date)).group_by(JournalAudit.user_id).all())
@@ -496,8 +522,8 @@ def admin_liste_utilisateurs(annee: int, mois: int, db: Session = Depends(get_db
             "id": u.id, "nom": u.nom, "email": u.email, "role": u.role,
             "inscrit_le": u.created_at.isoformat(timespec="seconds") if u.created_at else None,
             "nb_mouvements": nb.get(u.id, 0),
-            "revenus_mois": total(db, u, "revenu", debut, fin),
-            "depenses_mois": total(db, u, "depense", debut, fin),
+            "revenus_mois": totaux.get((u.id, "revenu"), 0),
+            "depenses_mois": totaux.get((u.id, "depense"), 0),
             "derniere_activite": derniere[u.id].isoformat(timespec="seconds") if derniere.get(u.id) else None,
         })
     return resultat
@@ -549,7 +575,15 @@ def diagnostic():
     def base():
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        return {"type": engine.dialect.name, "tables": sorted(inspect(engine).get_table_names())}
+            debut = time.perf_counter()
+            for _ in range(3):
+                conn.execute(text("SELECT 1"))
+            latence = (time.perf_counter() - debut) / 3 * 1000
+        hote = make_url(DATABASE_URL).host or ""
+        region = re.search(r"\.([a-z]{2}-[a-z]+-\d)\.", hote)
+        return {"type": engine.dialect.name, "tables": sorted(inspect(engine).get_table_names()),
+                "aller_retour_ms": round(latence, 1),
+                "region_base": region.group(1) if region else None}
 
     def ecriture():
         with engine.connect() as conn:
@@ -569,6 +603,7 @@ def diagnostic():
         "environnement": {
             "python": platform.python_version(),
             "vercel": bool(os.environ.get("VERCEL")),
+            "region_serveur": os.environ.get("VERCEL_REGION"),
             "variables_base": [v for v in ("DATABASE_URL", "POSTGRES_URL") if os.environ.get(v)],
         },
         # Noms des variables d'email que l'application voit (jamais leurs valeurs)
