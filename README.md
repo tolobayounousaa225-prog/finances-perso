@@ -78,13 +78,32 @@ Une fois configuré, **chaque push sur `main` lance les tests puis met à jour l
 
 Pas besoin de nom de domaine : [sslip.io](https://sslip.io) fournit gratuitement une adresse qui pointe vers l'IP du VPS. Par exemple, `api.12-34-56-78.sslip.io` pointe vers `12.34.56.78`. Caddy ou Certbot obtiennent un vrai certificat HTTPS pour cette adresse. Le HTTPS est obligatoire : GitHub Pages est en HTTPS, et le navigateur bloquerait une API en HTTP.
 
-### 1. Diagnostic du VPS (ne modifie rien)
+### Méthode simple (recommandée) : une seule commande
+
+Sur le VPS, connecté en `root` :
+```bash
+curl -fsSL https://raw.githubusercontent.com/tolobayounousaa225-prog/finances-perso/main/deploy/installation-auto.sh | bash
+```
+Le script installe tout, configure Caddy (système ou conteneur), lance l'application et programme :
+- la **mise à jour automatique** : toutes les 5 minutes, le VPS récupère lui-même les nouveautés de `main`. Aucune clé SSH ni aucun secret n'est à mettre dans GitHub ;
+- la **sauvegarde** de la base, chaque nuit à 3 h.
+
+On peut le relancer sans risque. Il reste ensuite, dans GitHub :
+- rendre le dépôt **public** ;
+- dans *Pages*, choisir la source **GitHub Actions** ;
+- créer la variable `API_URL` (le script affiche sa valeur).
+
+Journal des mises à jour sur le VPS : `tail /var/log/finances-maj.log`.
+
+### Méthode détaillée (manuelle)
+
+#### 1. Diagnostic du VPS (ne modifie rien)
 ```bash
 ssh root@IP_DU_VPS 'bash -s' < deploy/diagnostic-vps.sh
 ```
 Le résultat indique si Docker est installé, ce qui occupe déjà les ports 80/443, et l'adresse `DOMAINE` à utiliser.
 
-### 2. Préparer le VPS (une seule fois)
+#### 2. Préparer le VPS (une seule fois)
 Sur ton ordinateur, crée une clé SSH réservée au déploiement :
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/finances_deploy -N ""
@@ -93,7 +112,7 @@ ssh root@IP_DU_VPS "bash installer-vps.sh '$(cat ~/.ssh/finances_deploy.pub)'"
 ```
 Le script installe Docker s'il manque et crée l'utilisateur `deploy`. Il ne touche pas aux sites déjà présents.
 
-### 3. Créer `/opt/finances-perso/.env` sur le VPS
+#### 3. Créer `/opt/finances-perso/.env` sur le VPS
 Pars du modèle `.env.example` et remplis :
 - `SECRET_KEY` ;
 - `DOMAINE` : l'adresse donnée par le diagnostic ;
@@ -103,14 +122,14 @@ Pars du modèle `.env.example` et remplis :
   - **Caddy déjà installé** : `COMPOSE_PROFILES=` (vide), puis suis `deploy/caddy-existant.md` ;
   - **Nginx déjà installé** : `COMPOSE_PROFILES=` (vide), puis suis les instructions en tête de `deploy/nginx-finances.conf`.
 
-### 4. Configurer GitHub
+#### 4. Configurer GitHub
 - *Settings → General → Danger zone* : **Change visibility → Public**. GitHub Pages gratuit exige un dépôt public. Le code devient visible, mais aucune donnée ni aucun secret n'est dans le dépôt : ils restent sur le VPS et dans les secrets GitHub.
 - *Settings → Pages → Source* : **GitHub Actions**.
 - *Settings → Secrets and variables → Actions* :
   - Secrets : `VPS_HOST` (IP du VPS), `VPS_USER` (`deploy`), `VPS_SSH_KEY` (contenu de `~/.ssh/finances_deploy`).
   - Variables : `API_URL` = `https://<DOMAINE>`, `DEPLOIEMENT_ACTIF` = `true`.
 
-### 5. Déployer
+#### 5. Déployer
 Pousse sur `main`, ou relance le dernier workflow dans l'onglet *Actions*. Vérifie ensuite :
 - `https://<DOMAINE>/api/health` doit répondre `{"status":"ok"}` ;
 - l'application est sur `https://tolobayounousaa225-prog.github.io/finances-perso/`.
