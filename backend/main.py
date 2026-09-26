@@ -19,13 +19,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import inspect, text
+from sqlalchemy import func, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from auth import cle_secrete, creer_token, get_current_user, hacher, verifier
 from categorisation import CATEGORIES_PAR_DEFAUT, categoriser, mot_cle_a_apprendre
-from database import DATABASE_URL, Base, SessionLocal, engine, get_db, preparer_schema
+from database import DATABASE_URL, Base, SessionLocal, ajouter_colonnes_manquantes, engine, get_db, preparer_schema
 from emails import envoyer_email, smtp_configure
 from models import Budget, Categorie, JournalAudit, Mouvement, RegleCategorie, User
 from notifications import contenu_bilan, envoyer_bilans_du_mois, verifier_alerte_budget
@@ -44,11 +44,28 @@ FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "f
 def initialiser_base():
     preparer_schema()
     Base.metadata.create_all(bind=engine)
+    ajouter_colonnes_manquantes()
     with Session(engine) as db:
         existantes = {c.nom for c in db.query(Categorie).all()}
         for nom, (groupe, icone, _) in CATEGORIES_PAR_DEFAUT.items():
             if nom not in existantes:
                 db.add(Categorie(nom=nom, groupe=groupe, icone=icone))
+        db.commit()
+        designer_superadmin(db)
+
+
+def designer_superadmin(db: Session):
+    """Le super admin est le compte dont l'email est SUPERADMIN_EMAIL ; sans cette variable,
+    c'est le premier compte créé. Appelé au démarrage et après chaque inscription."""
+    email = os.environ.get("SUPERADMIN_EMAIL", "").strip().lower()
+    if email:
+        cible = db.query(User).filter(User.email == email).first()
+    elif not db.query(User).filter(User.role == "superadmin").first():
+        cible = db.query(User).order_by(User.id).first()
+    else:
+        cible = None
+    if cible and cible.role != "superadmin":
+        cible.role = "superadmin"
         db.commit()
 
 
@@ -187,6 +204,7 @@ def inscription(data: Inscription, db: Session = Depends(get_db)):
     user = User(nom=data.nom.strip(), email=data.email, mot_de_passe_hash=hacher(data.mot_de_passe))
     db.add(user)
     db.commit()
+    designer_superadmin(db)
     return {"access_token": creer_token(user.id), "token_type": "bearer"}
 
 
@@ -200,7 +218,7 @@ def connexion(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends
 
 @app.get("/api/me")
 def moi(user: User = Depends(get_current_user)):
-    return {"id": user.id, "nom": user.nom, "email": user.email, "recevoir_bilan": user.recevoir_bilan,
+    return {"id": user.id, "nom": user.nom, "email": user.email, "role": user.role, "recevoir_bilan": user.recevoir_bilan,
             "recevoir_alertes": user.recevoir_alertes, "smtp_configure": smtp_configure()}
 
 
@@ -232,6 +250,11 @@ def suggerer_categorie(libelle: str, db: Session = Depends(get_db), user: User =
 def liste_mouvements(annee: Optional[int] = None, mois: Optional[int] = None,
                      type: Optional[Literal["revenu", "depense"]] = None, archives: bool = False,
                      db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return mouvements_de(db, user, annee, mois, type, archives)
+
+
+def mouvements_de(db: Session, user: User, annee: Optional[int] = None, mois: Optional[int] = None,
+                  type: Optional[str] = None, archives: bool = False) -> List[MouvementOut]:
     q = db.query(Mouvement).filter(Mouvement.user_id == user.id)
     if not archives:
         q = q.filter(Mouvement.archive.is_(False))
@@ -366,6 +389,10 @@ def definir_budget(data: BudgetIn, db: Session = Depends(get_db), user: User = D
 # ---------------------------------------------------------------------------
 @app.get("/api/dashboard")
 def tableau_de_bord(annee: int, mois: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return tableau_de_bord_de(db, user, annee, mois)
+
+
+def tableau_de_bord_de(db: Session, user: User, annee: int, mois: int) -> dict:
     s = calculer_stats(db, user, annee, mois)
     evolution = []
     for n in range(5, -1, -1):
@@ -404,6 +431,10 @@ def apercu_bilan(annee: int, mois: int, user: User = Depends(get_current_user), 
 # ---------------------------------------------------------------------------
 @app.get("/api/journal")
 def journal(limite: int = 200, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return journal_de(db, user, limite)
+
+
+def journal_de(db: Session, user: User, limite: int = 200) -> list:
     rows = (db.query(JournalAudit).filter(JournalAudit.user_id == user.id)
             .order_by(JournalAudit.id.desc()).limit(min(limite, 1000)).all())
     return [{"id": j.id, "date": j.date.isoformat(timespec="seconds"), "action": j.action, "entite": j.entite,
@@ -433,6 +464,56 @@ def tache_bilans_http(authorization: Optional[str] = Header(None), db: Session =
     if secret and authorization != f"Bearer {secret}":
         raise HTTPException(401, "Non autorisé")
     return {"bilans_envoyes": envoyer_bilans_du_mois(db)}
+
+
+# ---------------------------------------------------------------------------
+# Super admin : observe tous les comptes, en lecture seule
+# ---------------------------------------------------------------------------
+def get_superadmin(user: User = Depends(get_current_user)) -> User:
+    if user.role != "superadmin":
+        raise HTTPException(403, "Réservé au super admin")
+    return user
+
+
+@app.get("/api/admin/utilisateurs")
+def admin_liste_utilisateurs(annee: int, mois: int, db: Session = Depends(get_db),
+                             admin: User = Depends(get_superadmin)):
+    """Tous les comptes avec quelques chiffres clés du mois choisi."""
+    debut, fin = bornes_mois(annee, mois)
+    nb = dict(db.query(Mouvement.user_id, func.count(Mouvement.id))
+              .filter(Mouvement.archive.is_(False)).group_by(Mouvement.user_id).all())
+    derniere = dict(db.query(JournalAudit.user_id, func.max(JournalAudit.date)).group_by(JournalAudit.user_id).all())
+    resultat = []
+    for u in db.query(User).order_by(User.id).all():
+        resultat.append({
+            "id": u.id, "nom": u.nom, "email": u.email, "role": u.role,
+            "inscrit_le": u.created_at.isoformat(timespec="seconds") if u.created_at else None,
+            "nb_mouvements": nb.get(u.id, 0),
+            "revenus_mois": total(db, u, "revenu", debut, fin),
+            "depenses_mois": total(db, u, "depense", debut, fin),
+            "derniere_activite": derniere[u.id].isoformat(timespec="seconds") if derniere.get(u.id) else None,
+        })
+    return resultat
+
+
+@app.get("/api/admin/utilisateurs/{user_id}")
+def admin_detail_utilisateur(user_id: int, annee: int, mois: int, db: Session = Depends(get_db),
+                             admin: User = Depends(get_superadmin)):
+    """Tableau de bord, mouvements du mois et journal d'un compte. La consultation est
+    elle-même inscrite dans le journal du super admin (traçabilité)."""
+    cible = db.get(User, user_id)
+    if not cible:
+        raise HTTPException(404, "Compte introuvable")
+    if cible.id != admin.id:
+        journaliser(db, admin, "consultation", "utilisateur", cible.id,
+                    apres={"compte": cible.email, "mois": f"{annee}-{mois:02d}"})
+        db.commit()
+    return {
+        "utilisateur": {"id": cible.id, "nom": cible.nom, "email": cible.email, "role": cible.role},
+        "tableau_de_bord": tableau_de_bord_de(db, cible, annee, mois),
+        "mouvements": mouvements_de(db, cible, annee, mois),
+        "journal": journal_de(db, cible, 50),
+    }
 
 
 def _masquer(message: str) -> str:

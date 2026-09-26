@@ -13,6 +13,7 @@ Application web de gestion financière personnelle (montants en FCFA, plusieurs 
 
   On peut les activer ou les désactiver dans l'onglet Paramètres, avec un aperçu du bilan et un bouton « M'envoyer ce bilan maintenant ».
 - Chaque compte ne voit que ses propres données.
+- **Super admin** : le premier compte créé (ou celui de `SUPERADMIN_EMAIL`) a un onglet *Administration*. Il y voit la liste de tous les comptes et le détail de chacun (tableau de bord, mouvements, journal), **en lecture seule**. Chaque consultation est inscrite dans son journal.
 
 ## Structure
 
