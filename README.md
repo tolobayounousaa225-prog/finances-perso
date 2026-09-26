@@ -66,17 +66,22 @@ Sans configuration, les emails sont **simulés** : ils s'affichent dans les logs
 
 **Comment ça marche.** Une tâche tourne chaque jour à 8 h. Elle envoie le bilan du mois écoulé à tous ceux qui ne l'ont pas encore reçu, jusqu'au 7 du mois. Si le serveur était arrêté le 1er, le bilan part donc quand même au redémarrage. Chaque envoi est mémorisé en base : un email ne part jamais deux fois. Les utilisateurs sans aucun mouvement le mois précédent ne reçoivent pas de bilan vide.
 
-## Mise en ligne gratuite : Render + Supabase (sans carte bancaire)
+## Mise en ligne gratuite : Vercel + base Neon (sans carte bancaire)
 
-Render (offre gratuite) fait tourner l'application : l'API et l'interface sont servies à la même adresse. Supabase (offre gratuite) garde les données dans PostgreSQL.
+Vercel (offre *Hobby*, gratuite) fait tourner l'application : l'API et l'interface sont servies à la même adresse. La base de données PostgreSQL gratuite est fournie par Neon, et elle s'ajoute depuis Vercel.
 
-1. **Supabase** : crée un projet `finances-perso`, **note son mot de passe**, puis clique sur *Connect*. Copie l'adresse **Session pooler**, qui commence par `postgresql://postgres.xxxx:[YOUR-PASSWORD]@aws-0-...pooler.supabase.com:5432/postgres`, et remplace `[YOUR-PASSWORD]` par ton mot de passe.
-2. **Render** : *New* → *Blueprint* → choisis ce dépôt. Render lit `render.yaml`, génère `SECRET_KEY` tout seul et demande `DATABASE_URL` : colle l'adresse de l'étape 1.
-3. Ouvre l'adresse `https://finances-perso-xxxx.onrender.com` donnée par Render.
+1. Va sur [vercel.com](https://vercel.com) et inscris-toi avec **GitHub** (offre *Hobby*).
+2. Clique sur *Add New* → *Project*, **importe** `finances-perso`, puis *Deploy*. Aucun réglage n'est nécessaire : `vercel.json` s'en charge.
+3. Dans le projet, ouvre l'onglet *Storage* → *Create Database* → **Neon**, puis *Create* et connecte la base au projet. Vercel ajoute tout seul la variable `DATABASE_URL`.
+4. Dans l'onglet *Deployments*, lance **Redeploy** sur le dernier déploiement. L'app est en ligne sur `https://finances-perso-xxxx.vercel.app`.
 
-Les tables sont rangées dans le schéma `finances` (variable `DB_SCHEMA`), qui peut donc partager une base existante. Chaque push sur `main` redéploie automatiquement.
+À savoir :
+- **Clé secrète** : elle est générée au premier démarrage et gardée en base (on peut aussi fournir `SECRET_KEY`).
+- **Tâche quotidienne** : Vercel Cron appelle `/api/taches/bilans` chaque jour à 8 h UTC pour les bilans mensuels (voir `vercel.json`). Définir `CRON_SECRET` protège cet appel.
+- **Mises à jour** : chaque push sur `main` redéploie automatiquement.
+- **Passage au VPS plus tard** : il suffit de mettre la même `DATABASE_URL` dans le `.env` du VPS. Les données restent dans Neon, il n'y a rien à transférer.
 
-⚠️ Sur l'offre gratuite, Render met l'application en veille après 15 minutes sans visite : le premier chargement suivant prend environ 1 minute. Les bilans mensuels manqués pendant la veille partent au réveil (rattrapage jusqu'au 7 du mois).
+Autres hébergeurs possibles : `render.yaml` a été retiré, car Render demande une carte bancaire. La variable `DB_SCHEMA` permet toujours de partager une base Supabase existante.
 
 ## Mise en ligne : frontend sur GitHub Pages, backend sur le VPS Contabo
 

@@ -227,3 +227,43 @@ def test_frontend_servi_en_local(client):
     assert "Finances Perso" in client.get("/").text
     assert 'window.API_URL = ""' in client.get("/config.js").text
     assert client.get("/vendor/chart.umd.min.js").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Hébergement Vercel
+# ---------------------------------------------------------------------------
+def test_cle_secrete_generee_et_gardee_en_base(client, monkeypatch):
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    import auth
+    auth._cle_en_cache = None
+    h = inscrire(client)
+    cle = auth.cle_secrete()
+    assert len(cle) == 64
+    auth._cle_en_cache = None  # simule un redémarrage : la clé est relue en base
+    assert auth.cle_secrete() == cle
+    assert client.get("/api/me", headers=h).status_code == 200  # le jeton reste valide
+
+
+def test_tache_bilans_http(client, monkeypatch):
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+    assert client.get("/api/taches/bilans").json() == {"bilans_envoyes": 0}
+    monkeypatch.setenv("CRON_SECRET", "abc")
+    assert client.get("/api/taches/bilans").status_code == 401
+    r = client.get("/api/taches/bilans", headers={"Authorization": "Bearer abc"})
+    assert r.status_code == 200
+
+
+def test_point_entree_vercel(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/vercel.db")
+    monkeypatch.setenv("VERCEL", "1")
+    for mod in ["main", "database", "models", "auth", "statistiques", "notifications", "taches", "emails", "index"]:
+        sys.modules.pop(mod, None)
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
+    import taches
+    assert taches.demarrer_planificateur() is None  # pas de planificateur sur Vercel
+    import index  # api/index.py : crée les tables dès l'import
+    from fastapi.testclient import TestClient
+    c = TestClient(index.app)  # sans « with » : pas d'événement de démarrage, comme sur Vercel
+    r = c.post("/api/auth/register", json={"nom": "V", "email": "v@t.ci", "mot_de_passe": "motdepasse1"})
+    assert r.status_code == 200
+    assert "Finances Perso" in c.get("/").text

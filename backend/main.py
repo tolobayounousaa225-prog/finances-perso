@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import date
 from typing import List, Literal, Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
@@ -25,7 +25,7 @@ from categorisation import CATEGORIES_PAR_DEFAUT, categoriser, mot_cle_a_apprend
 from database import Base, SessionLocal, engine, get_db, preparer_schema
 from emails import envoyer_email, smtp_configure
 from models import Budget, Categorie, JournalAudit, Mouvement, RegleCategorie, User
-from notifications import contenu_bilan, verifier_alerte_budget
+from notifications import contenu_bilan, envoyer_bilans_du_mois, verifier_alerte_budget
 from recommandations import generer_recommandations
 from statistiques import bornes_mois, calculer_stats, mois_precedent, total
 from taches import demarrer_planificateur
@@ -283,7 +283,10 @@ def planifier_alerte(taches: BackgroundTasks, user: User, m: Mouvement):
     """Vérifie le budget APRÈS avoir répondu, pour que la saisie reste rapide
     même si l'envoi de l'email prend quelques secondes."""
     if m.type == "depense" and m.categorie_id:
-        taches.add_task(verifier_alerte_en_arriere_plan, user.id, m.categorie_id, m.date)
+        if os.environ.get("VERCEL"):  # serverless : le travail après la réponse n'est pas garanti
+            verifier_alerte_en_arriere_plan(user.id, m.categorie_id, m.date)
+        else:
+            taches.add_task(verifier_alerte_en_arriere_plan, user.id, m.categorie_id, m.date)
 
 
 def verifier_alerte_en_arriere_plan(user_id: int, categorie_id: int, jour: date):
@@ -407,6 +410,16 @@ def export_csv(db: Session = Depends(get_db), user: User = Depends(get_current_u
                     m.montant, "oui" if m.archive else "non"])
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
                              headers={"Content-Disposition": "attachment; filename=mouvements.csv"})
+
+
+@app.get("/api/taches/bilans")
+def tache_bilans_http(authorization: Optional[str] = Header(None), db: Session = Depends(get_db)):
+    """Déclenche l'envoi des bilans mensuels en attente (appelée chaque jour par Vercel Cron).
+    Sans danger si elle est appelée plusieurs fois : un bilan ne part jamais deux fois."""
+    secret = os.environ.get("CRON_SECRET")
+    if secret and authorization != f"Bearer {secret}":
+        raise HTTPException(401, "Non autorisé")
+    return {"bilans_envoyes": envoyer_bilans_du_mois(db)}
 
 
 @app.get("/api/health")

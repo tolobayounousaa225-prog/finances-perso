@@ -96,3 +96,10 @@ class EmailEnvoye(Base):
     type = Column(String, nullable=False)
     cle = Column(String, nullable=False)
     date = Column(DateTime, default=datetime.utcnow)
+
+
+class Parametre(Base):
+    """Réglages internes de l'application (ex. clé secrète générée au premier démarrage)."""
+    __tablename__ = "parametres"
+    cle = Column(String, primary_key=True)
+    valeur = Column(Text, nullable=False)

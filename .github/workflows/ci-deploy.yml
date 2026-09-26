@@ -59,7 +59,7 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          source: "backend,frontend,deploy,Dockerfile,docker-compose.yml,Caddyfile"
+          source: "backend,frontend,deploy,requirements.txt,Dockerfile,docker-compose.yml,Caddyfile"
           target: /opt/finances-perso
       - name: Reconstruire et relancer
         uses: appleboy/ssh-action@v1.0.3
