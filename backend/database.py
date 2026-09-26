@@ -11,7 +11,6 @@ import re
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy.pool import NullPool
 
 # POSTGRES_URL : nom utilisé par certaines intégrations (ex. base Neon ajoutée depuis Vercel)
 DATABASE_URL = (os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL") or "sqlite:///./finances.db").strip()
@@ -27,10 +26,16 @@ if EST_SQLITE:
 else:
     connect_args = {"options": f"-csearch_path={DB_SCHEMA}"} if DB_SCHEMA else {}
 
-# pool_pre_ping : vérifie la connexion avant usage (les bases hébergées coupent les connexions inactives)
-# Sur Vercel (serverless), chaque requête peut tourner sur une instance différente : pas de pool.
+# pool_pre_ping : vérifie la connexion avant usage (les bases hébergées coupent les connexions inactives).
+# Sur Vercel, une instance sert plusieurs requêtes à la suite : on garde 1 connexion ouverte au lieu
+# d'en ouvrir une neuve (lente : chiffrement + authentification) à chaque requête. Recyclée après 4 min.
 SUR_VERCEL = bool(os.environ.get("VERCEL"))
-options_pool = {"poolclass": NullPool} if SUR_VERCEL and not EST_SQLITE else {"pool_pre_ping": not EST_SQLITE}
+if EST_SQLITE:
+    options_pool = {}
+elif SUR_VERCEL:
+    options_pool = {"pool_size": 1, "max_overflow": 4, "pool_pre_ping": True, "pool_recycle": 240}
+else:
+    options_pool = {"pool_pre_ping": True}
 engine = create_engine(DATABASE_URL, connect_args=connect_args, **options_pool)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

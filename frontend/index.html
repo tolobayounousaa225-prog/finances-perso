@@ -332,10 +332,8 @@ function dessiner(id, config) {
 
 async function chargerDashboard() {
   const { annee, mois } = moisChoisi();
-  const [d, recos] = await Promise.all([
-    api(`/api/dashboard?annee=${annee}&mois=${mois}`),
-    api(`/api/recommandations?annee=${annee}&mois=${mois}`),
-  ]);
+  const d = await api(`/api/dashboard?annee=${annee}&mois=${mois}`);  // inclut les recommandations
+  const recos = d.recommandations;
   $("kpi-revenus").textContent = fcfa(d.revenus);
   $("kpi-depenses").textContent = fcfa(d.depenses);
   $("kpi-solde").textContent = fcfa(d.solde);
