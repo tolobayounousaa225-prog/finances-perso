@@ -71,7 +71,7 @@ Sans configuration, les emails sont **simulés** : ils s'affichent dans les logs
 Vercel (offre *Hobby*, gratuite) fait tourner l'application : l'API et l'interface sont servies à la même adresse. La base de données PostgreSQL gratuite est fournie par Neon, et elle s'ajoute depuis Vercel.
 
 1. Va sur [vercel.com](https://vercel.com) et inscris-toi avec **GitHub** (offre *Hobby*).
-2. Clique sur *Add New* → *Project*, **importe** `finances-perso`, puis *Deploy*. Aucun réglage n'est nécessaire : `vercel.json` s'en charge.
+2. Clique sur *Add New* → *Project*, **importe** `finances-perso`, puis *Deploy*. Aucun réglage n'est nécessaire : Vercel reconnaît FastAPI et utilise `api/index.py` comme point d'entrée (`vercel.json` ne déclare que la tâche quotidienne).
 3. Dans le projet, ouvre l'onglet *Storage* → *Create Database* → **Neon**, puis *Create* et connecte la base au projet. Vercel ajoute tout seul la variable `DATABASE_URL`.
 4. Dans l'onglet *Deployments*, lance **Redeploy** sur le dernier déploiement. L'app est en ligne sur `https://finances-perso-xxxx.vercel.app`.
 
