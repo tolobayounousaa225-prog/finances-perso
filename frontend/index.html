@@ -92,6 +92,34 @@
           color: var(--text); text-align: left; font: inherit; }
   .puce:hover { border-color: var(--primary); }
   .puce b { color: var(--primary); } .puce small { display: block; color: var(--muted); }
+  /* Analyses */
+  .score-tete { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
+  .jauge { --v: 0; --c: var(--primary); width: 140px; height: 140px; border-radius: 50%; flex: none; display: grid; place-items: center;
+           background: conic-gradient(var(--c) calc(var(--v) * 1%), var(--bg) 0); }
+  .jauge > div { width: 108px; height: 108px; border-radius: 50%; background: var(--card); display: grid; place-items: center; text-align: center; }
+  .jauge b { font-size: 34px; line-height: 1; } .jauge small { color: var(--muted); }
+  .criteres { flex: 1 1 320px; display: grid; gap: 10px; }
+  .critere .ligne-c { display: flex; justify-content: space-between; font-size: 14px; gap: 8px; }
+  .critere .barre { margin: 4px 0 2px; height: 8px; }
+  .calendrier { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+  .calendrier .entete { font-size: 12px; color: var(--muted); text-align: center; }
+  .case { border-radius: 6px; min-height: 52px; padding: 4px 6px; font-size: 12px; background: var(--bg); color: var(--text);
+          display: flex; flex-direction: column; justify-content: space-between; }
+  .case .num { color: var(--muted); } .case .val { font-weight: 600; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .case.n1 { background: color-mix(in srgb, var(--primary) 18%, var(--card)); }
+  .case.n2 { background: color-mix(in srgb, var(--primary) 36%, var(--card)); }
+  .case.n3 { background: color-mix(in srgb, var(--primary) 56%, var(--card)); }
+  .case.n4 { background: color-mix(in srgb, var(--primary) 78%, var(--card)); }
+  .case.n5 { background: var(--primary); }
+  .case.n4, .case.n5, .case.n4 .num, .case.n5 .num { color: var(--primary-text); }
+  .case.vide { background: none; }
+  .legende-cal { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .legende-cal .case { min-height: 14px; width: 18px; padding: 0; }
+  .simulateurs { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .simulateurs form { display: grid; gap: 8px; }
+  .simulateurs label { font-size: 13px; color: var(--muted); display: grid; gap: 4px; }
+  .resultat-sim { background: var(--bg); border-radius: 8px; padding: 10px 12px; font-size: 14px; line-height: 1.6; }
+  .resultat-sim b { font-size: 16px; }
   pre { white-space: pre-wrap; margin: 0; font-size: 12px; color: var(--muted); }
 </style>
 </head>
@@ -128,6 +156,7 @@
       <button data-onglet="objectifs">🎯 Objectifs</button>
       <button data-onglet="budgets">Budgets</button>
       <button data-onglet="recherche">🔍 Recherche</button>
+      <button data-onglet="analyses">📈 Analyses</button>
       <button data-onglet="journal">Journal</button>
       <button data-onglet="parametres">Paramètres</button>
       <button data-onglet="admin" id="bouton-admin" class="hidden">🛡️ Administration</button>
@@ -268,6 +297,61 @@
           <div class="table-scroll"><table>
             <thead><tr><th>Date</th><th>Libellé</th><th>Catégorie</th><th class="montant">Montant</th></tr></thead>
             <tbody id="rch-liste"></tbody></table></div></div>
+      </div>
+    </section>
+
+    <!-- Analyses -->
+    <section id="onglet-analyses" class="hidden">
+      <div class="card">
+        <h2>❤️ Score de santé financière</h2>
+        <div class="score-tete">
+          <div class="jauge" id="jauge" role="img" aria-label="Score"><div><span><b id="score-valeur">–</b><br><small>/ 100</small></span></div></div>
+          <div class="criteres" id="score-criteres"></div>
+        </div>
+        <p id="score-niveau" style="font-weight:600;margin:12px 0 0"></p>
+      </div>
+      <div class="grid">
+        <div class="card"><h2>Évolution du score (6 mois)</h2><div class="chart-box"><canvas id="chart-score"></canvas></div></div>
+        <div class="card"><h2>Dépense moyenne par jour de la semaine</h2>
+          <p class="muted" id="semaine-resume" style="margin-top:-6px"></p>
+          <div class="chart-box"><canvas id="chart-semaine"></canvas></div></div>
+      </div>
+      <div class="card">
+        <h2>📅 Calendrier des dépenses</h2>
+        <p class="muted" id="cal-resume"></p>
+        <div class="calendrier" id="calendrier"></div>
+        <div class="legende-cal">Moins <span class="case"></span><span class="case n1"></span><span class="case n2"></span>
+          <span class="case n3"></span><span class="case n4"></span><span class="case n5"></span> Plus</div>
+      </div>
+      <h2 style="font-size:16px;margin:8px 0 12px">🧮 Simulateurs</h2>
+      <div class="simulateurs">
+        <div class="card">
+          <h2>Et si je réduisais… ?</h2>
+          <form id="sim-reduction" onsubmit="return false">
+            <label>Catégorie (moyenne des 3 derniers mois)<select id="sim-cat"></select></label>
+            <label>Réduction : <span id="sim-pct-val">20 %</span><input type="range" id="sim-pct" min="5" max="100" step="5" value="20"></label>
+          </form>
+          <div class="resultat-sim" id="sim-reduction-res"></div>
+        </div>
+        <div class="card">
+          <h2>Crédit / prêt</h2>
+          <form id="sim-credit" onsubmit="return false">
+            <label>Montant emprunté (FCFA)<input type="number" id="cr-montant" min="0" step="10000" value="1000000"></label>
+            <label>Taux annuel (%)<input type="number" id="cr-taux" min="0" max="100" step="0.1" value="12"></label>
+            <label>Durée (mois)<input type="number" id="cr-duree" min="1" max="360" step="1" value="24"></label>
+          </form>
+          <div class="resultat-sim" id="sim-credit-res"></div>
+        </div>
+        <div class="card">
+          <h2>Épargne et intérêts composés</h2>
+          <form id="sim-epargne" onsubmit="return false">
+            <label>Versement chaque mois (FCFA)<input type="number" id="ep-versement" min="0" step="5000" value="50000"></label>
+            <label>Rendement annuel (%)<input type="number" id="ep-taux" min="0" max="50" step="0.1" value="3.5"></label>
+            <label>Durée (années)<input type="number" id="ep-annees" min="1" max="40" step="1" value="5"></label>
+          </form>
+          <div class="resultat-sim" id="sim-epargne-res"></div>
+          <div class="chart-box" style="height:200px;margin-top:10px"><canvas id="chart-epargne"></canvas></div>
+        </div>
       </div>
     </section>
 
@@ -503,7 +587,7 @@ $("mois-choisi").onchange = rafraichir;
 
 function rafraichir() {
   const chargeurs = { dashboard: chargerDashboard, mouvements: chargerMouvements, objectifs: chargerObjectifs, budgets: chargerBudgets,
-                      recherche: chargerRecherche,
+                      recherche: chargerRecherche, analyses: chargerAnalyses,
                       journal: chargerJournal, parametres: chargerParametres, admin: chargerAdmin };
   chargeurs[ongletActif]().catch((err) => alert(err.message));
 }
@@ -828,6 +912,146 @@ $("liste-etiquettes").onclick = (e) => {
   rechercher().catch((err) => alert(err.message));
 };
 $("rch-liste").onclick = (e) => { if (e.target.dataset.etiquette) ouvrirEtiquette(e.target.dataset.etiquette); };
+
+// ---------------------------------------------------------------- Analyses
+let analysesDonnees = null;
+const sombre = () => matchMedia("(prefers-color-scheme: dark)").matches;
+// Deux séries du simulateur d'épargne : couleurs validées (daltonisme) pour fond clair et sombre
+const graduation = (v) => Number(v).toLocaleString("fr-FR");
+const couleursEpargne = () => sombre() ? ["#199e70", "#d95926"] : ["#1baf7a", "#eb6834"];
+
+async function chargerAnalyses() {
+  const { annee, mois } = moisChoisi();
+  const d = analysesDonnees = await api(`/api/analyses?annee=${annee}&mois=${mois}`);
+  afficherScore(d);
+  afficherCalendrier(d.calendrier);
+  const cats = Object.entries(d.moyennes_categories);
+  const choix = $("sim-cat").value;
+  $("sim-cat").innerHTML = cats.map(([c, v]) => `<option value="${esc(c)}">${esc(c)} (${fcfa(v)} / mois)</option>`).join("")
+    || '<option value="">Aucune dépense récente</option>';
+  if (choix && d.moyennes_categories[choix] !== undefined) $("sim-cat").value = choix;
+  simulerReduction(); simulerCredit(); simulerEpargne();
+}
+
+function afficherScore(d) {
+  const sc = d.score;
+  const couleur = sc.score === null ? "var(--muted)" : sc.score >= 60 ? "var(--success)" : sc.score >= 40 ? "var(--warning)" : "var(--danger)";
+  $("jauge").style.setProperty("--v", sc.score ?? 0);
+  $("jauge").style.setProperty("--c", couleur);
+  $("jauge").setAttribute("aria-label", `Score ${sc.score ?? "indisponible"} sur 100`);
+  $("score-valeur").textContent = sc.score ?? "–";
+  $("score-niveau").textContent = sc.score === null ? "Pas assez de données ce mois-ci : saisis tes revenus et tes dépenses."
+    : `Santé financière : ${sc.niveau}`;
+  $("score-niveau").style.color = couleur;
+  $("score-criteres").innerHTML = sc.criteres.map((c) => `
+    <div class="critere">
+      <div class="ligne-c"><b>${esc(c.nom)}</b><span>${c.points} / ${c.max}</span></div>
+      <div class="barre"><div style="width:${c.points * 100 / c.max}%"></div></div>
+      <div class="muted">${esc(masquer(c.detail))}${c.conseil ? " — " + esc(masquer(c.conseil)) : ""}</div>
+    </div>`).join("");
+  if (typeof Chart === "undefined") return;
+  const texte = cssVar("--text"), grille = cssVar("--border");
+  dessiner("chart-score", {
+    type: "line",
+    data: { labels: d.evolution_score.map((e) => e.mois),
+            datasets: [{ label: "Score", data: d.evolution_score.map((e) => e.score), borderColor: cssVar("--primary"),
+                         backgroundColor: cssVar("--primary"), borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, spanGaps: true }] },
+    options: { maintainAspectRatio: false, plugins: { legend: { display: false },
+               tooltip: { callbacks: { label: (c) => ` Score : ${c.raw ?? "–"} / 100` } } },
+               scales: { y: { min: 0, max: 100, ticks: { color: texte, stepSize: 20 }, grid: { color: grille } },
+                         x: { ticks: { color: texte }, grid: { display: false } } } },
+  });
+  const sem = d.calendrier.semaine;
+  $("semaine-resume").textContent = d.calendrier.jour_le_plus_depensier
+    ? `Sur les 3 derniers mois, tu dépenses le plus le ${d.calendrier.jour_le_plus_depensier}.` : "";
+  dessiner("chart-semaine", {
+    type: "bar",
+    data: { labels: sem.map((j) => j.jour.slice(0, 3)), datasets: [{ label: "Moyenne", data: sem.map((j) => j.moyenne),
+            backgroundColor: cssVar("--primary"), borderRadius: 4, borderSkipped: "bottom", maxBarThickness: 36 }] },
+    options: { maintainAspectRatio: false, plugins: { legend: { display: false },
+               tooltip: { callbacks: { title: (c) => sem[c[0].dataIndex].jour, label: (c) => ` ${fcfa(c.raw)} en moyenne` } } },
+               scales: { y: { ticks: { color: texte, display: !discret, callback: graduation }, grid: { color: grille } },
+                         x: { ticks: { color: texte }, grid: { display: false } } } },
+  });
+}
+
+function afficherCalendrier(cal) {
+  // Échelle sur le 90e centile des jours avec dépenses : une grosse dépense isolée (loyer) ne rend pas
+  // tous les autres jours pâles ; les jours au-dessus prennent simplement la couleur la plus foncée.
+  const valeurs = cal.jours.map((j) => j.depenses).filter(Boolean).sort((a, b) => a - b);
+  const plafond = valeurs.length ? valeurs[Math.min(valeurs.length - 1, Math.floor(valeurs.length * 0.9))] : 1;
+  const niveau = (v) => v ? Math.min(5, Math.max(1, Math.ceil(v * 5 / plafond))) : 0;
+  const entetes = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"].map((j) => `<div class="entete">${j}</div>`).join("");
+  const vides = '<div class="case vide"></div>'.repeat(cal.premier_jour_semaine);
+  $("calendrier").innerHTML = entetes + vides + cal.jours.map((j) => `
+    <div class="case n${niveau(j.depenses)}" title="${dateCourte(j.date)} : ${j.depenses ? fcfa(j.depenses) + " (" + j.nb + " dépense(s))" : "aucune dépense"}">
+      <span class="num">${j.jour}</span><span class="val">${j.depenses ? (discret ? "••" : Math.round(j.depenses / 1000) + "k") : ""}</span></div>`).join("");
+  const gros = cal.plus_gros_jour;
+  $("cal-resume").textContent = `${fcfa(cal.moyenne_par_jour)} dépensés en moyenne par jour · ${cal.jours_sans_depense} jour(s) sans dépense`
+    + (gros ? ` · plus grosse journée : le ${dateCourte(gros.date)} (${fcfa(gros.depenses)})` : "");
+}
+
+// Simulateur 1 : réduire une catégorie
+function simulerReduction() {
+  const pct = Number($("sim-pct").value);
+  $("sim-pct-val").textContent = pct + " %";
+  const cat = $("sim-cat").value, moyenne = analysesDonnees?.moyennes_categories[cat];
+  if (!moyenne) { $("sim-reduction-res").innerHTML = '<span class="muted">Saisis des dépenses pour utiliser ce simulateur.</span>'; return; }
+  const mois = moyenne * pct / 100;
+  $("sim-reduction-res").innerHTML = `En dépensant ${pct} % de moins en « ${esc(cat)} », tu économises
+    <b>${fcfa(mois)}</b> par mois, soit <b>${fcfa(mois * 12)}</b> par an et <b>${fcfa(mois * 60)}</b> en 5 ans.`;
+}
+
+// Simulateur 2 : mensualité d'un crédit à taux fixe
+function mensualiteCredit(montant, tauxAnnuel, duree) {
+  const r = tauxAnnuel / 100 / 12;
+  return r === 0 ? montant / duree : montant * r / (1 - Math.pow(1 + r, -duree));
+}
+function simulerCredit() {
+  const montant = Number($("cr-montant").value), taux = Number($("cr-taux").value), duree = Number($("cr-duree").value);
+  if (!(montant > 0 && duree > 0 && taux >= 0)) { $("sim-credit-res").textContent = "Renseigne le montant, le taux et la durée."; return; }
+  const m = mensualiteCredit(montant, taux, duree), cout = m * duree - montant;
+  const revenus = analysesDonnees?.revenus_moyens || 0;
+  const part = revenus ? m * 100 / revenus : null;
+  $("sim-credit-res").innerHTML = `Mensualité : <b>${fcfa(m)}</b><br>Coût total du crédit (intérêts) : <b>${fcfa(cout)}</b><br>
+    Tu rembourseras ${fcfa(m * duree)} au total.` + (part === null ? "" : `<br>Cela représente <b>${Math.round(part)} %</b> de tes revenus
+    moyens${part > 33 ? ' — <span class="depense">⚠️ au-delà de 33 %, le remboursement risque de peser trop lourd.</span>' : "."}`);
+}
+
+// Simulateur 3 : épargne mensuelle avec intérêts composés (intérêts ajoutés chaque mois)
+function projectionEpargne(versement, tauxAnnuel, annees) {
+  const r = tauxAnnuel / 100 / 12, parAn = [];
+  let capital = 0;
+  for (let mois = 1; mois <= annees * 12; mois++) {
+    capital = capital * (1 + r) + versement;
+    if (mois % 12 === 0) parAn.push({ annee: mois / 12, capital, verse: versement * mois });
+  }
+  return parAn;
+}
+function simulerEpargne() {
+  const v = Number($("ep-versement").value), taux = Number($("ep-taux").value), annees = Math.min(Number($("ep-annees").value), 40);
+  if (!(v > 0 && annees >= 1 && taux >= 0)) { $("sim-epargne-res").textContent = "Renseigne le versement, le rendement et la durée."; return; }
+  const p = projectionEpargne(v, taux, annees), fin = p[p.length - 1];
+  $("sim-epargne-res").innerHTML = `Au bout de ${annees} an(s) : <b>${fcfa(fin.capital)}</b><br>
+    dont ${fcfa(fin.verse)} versés et <b>${fcfa(fin.capital - fin.verse)}</b> d'intérêts gagnés.`;
+  if (typeof Chart === "undefined") return;
+  const [cVerse, cInterets] = couleursEpargne(), texte = cssVar("--text"), fond = cssVar("--card");
+  dessiner("chart-epargne", {
+    type: "bar",
+    data: { labels: p.map((x) => "an " + x.annee), datasets: [
+      { label: "Versé", data: p.map((x) => Math.round(x.verse)), backgroundColor: cVerse, borderColor: fond, borderWidth: { top: 2 }, maxBarThickness: 40 },
+      { label: "Intérêts", data: p.map((x) => Math.round(x.capital - x.verse)), backgroundColor: cInterets, borderRadius: { topLeft: 4, topRight: 4 }, maxBarThickness: 40 },
+    ] },
+    options: { maintainAspectRatio: false, plugins: { legend: { labels: { color: texte, boxWidth: 12 } },
+               tooltip: { mode: "index", callbacks: { label: (c) => ` ${c.dataset.label} : ${fcfa(c.raw)}` } } },
+               scales: { x: { stacked: true, ticks: { color: texte }, grid: { display: false } },
+                         y: { stacked: true, ticks: { color: texte, display: !discret, callback: graduation }, grid: { color: cssVar("--border") } } } },
+  });
+}
+$("sim-cat").onchange = simulerReduction;
+$("sim-pct").oninput = simulerReduction;
+$("sim-credit").oninput = simulerCredit;
+$("sim-epargne").oninput = simulerEpargne;
 
 // ---------------------------------------------------------------- Budgets
 async function chargerBudgets() {
