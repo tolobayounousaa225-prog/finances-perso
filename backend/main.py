@@ -26,6 +26,7 @@ from sqlalchemy import func, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
+from analyses import analyses_de
 from auth import cle_secrete, creer_token, get_current_user, hacher, lire_token, verifier
 from bilan_pdf import generer_bilan_pdf
 from categorisation import CATEGORIES_PAR_DEFAUT, categoriser, mot_cle_a_apprendre
@@ -824,6 +825,13 @@ def tableau_de_bord_de(db: Session, user: User, annee: int, mois: int) -> dict:
             "par_categorie": s.par_categorie, "par_groupe": s.par_groupe, "budgets": s.budgets,
             "evolution": evolution(lignes, annee, mois),
             "recommandations": generer_recommandations(s)}
+
+
+@app.get("/api/analyses")
+def analyses(annee: int, mois: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Onglet Analyses : score de santé financière (et son évolution), calendrier des dépenses,
+    habitudes par jour de la semaine, moyennes pour les simulateurs."""
+    return analyses_de(db, user, annee, mois)
 
 
 @app.get("/api/recommandations")

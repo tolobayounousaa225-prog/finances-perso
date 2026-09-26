@@ -20,6 +20,10 @@ Application web de gestion financière personnelle (montants en FCFA, plusieurs 
 - Chaque compte ne voit que ses propres données.
 - **Étiquettes** : pour suivre un projet ou un événement (#mariage, #rentree…) sur plusieurs catégories et plusieurs mois. On les ajoute à la saisie, ou en écrivant `#mariage` dans le libellé. Un clic sur une étiquette donne son total.
 - **Recherche** dans tous les mouvements (mot du libellé, type, catégorie, étiquette, période, montant, archivés), avec les totaux par catégorie et par mois.
+- **Analyses** (onglet 📈) :
+  - **score de santé financière sur 100**, calculé sur 5 critères (épargne, équilibre, budgets, fonds d'urgence, envies), chacun avec son conseil, et son évolution sur 6 mois ;
+  - **calendrier des dépenses** (carte de chaleur) et dépense moyenne par jour de la semaine (« tu dépenses le plus le samedi ») ;
+  - **simulateurs** : « et si je réduisais cette catégorie de X % », crédit (mensualité, coût, part des revenus), épargne avec intérêts composés.
 - **Double authentification** (facultative, onglet *Paramètres*) : code à 6 chiffres d'une application comme Google Authenticator, demandé à chaque connexion, avec 8 codes de secours à usage unique. Après 5 codes faux, la connexion est bloquée 10 minutes. Activations, désactivations et échecs sont inscrits dans le journal.
 - **Mode discret** : le bouton 👁️ en haut masque tous les montants (« •••• FCFA »). Le choix est mémorisé dans le navigateur.
 - **Super admin** : le premier compte créé (ou celui de `SUPERADMIN_EMAIL`) a un onglet *Administration*. Il y voit la liste de tous les comptes et le détail de chacun (tableau de bord, mouvements, journal), **en lecture seule**. Chaque consultation est inscrite dans son journal.
@@ -40,6 +44,7 @@ backend/
   temps.py             date du jour (fuseau Africa/Abidjan par défaut)
   deux_facteurs.py     double authentification (codes TOTP, QR code, codes de secours)
   etiquettes.py        étiquettes (#mariage…) : normalisation, #mots du libellé
+  analyses.py          score de santé financière, calendrier, habitudes par jour
   bilan_pdf.py         bilan mensuel en PDF (fpdf2)
   conseils_ia.py       conseils rédigés par l'IA (Claude, facultatif)
   statistiques.py      calculs (totaux du mois, moyennes…)

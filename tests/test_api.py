@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 # Modules rechargés à chaque test (ils lisent les variables d'environnement à l'import)
 MODULES_APP = ["main", "database", "models", "auth", "statistiques", "notifications", "taches", "emails", "temps",
-               "tracabilite", "objectifs", "recurrents", "recommandations", "bilan_pdf", "conseils_ia", "deux_facteurs", "etiquettes"]
+               "tracabilite", "objectifs", "recurrents", "recommandations", "bilan_pdf", "conseils_ia", "deux_facteurs", "etiquettes", "analyses"]
 
 
 @pytest.fixture()
@@ -805,3 +805,56 @@ def test_recherche_filtres(client):
     transport = next(c for c in client.get("/api/categories", headers=h).json() if c["nom"] == "Transport")
     assert chercher(categorie_id=transport["id"])["par_categorie"] == {"Transport": 7500}
     assert chercher(au="2026-09-30")["nb"] == 2
+
+
+# ---------------------------------------------------------------- Analyses
+def test_score_sante():
+    from analyses import score_sante
+    from recommandations import StatsMois
+    assert score_sante(StatsMois(0, 0, {}, {}, {}))["score"] is None
+    parfait = StatsMois(revenus=500000, depenses=400000,
+                        par_groupe={"besoin": 200000, "envie": 100000, "epargne": 100000},
+                        par_categorie={"Logement": 150000, "Loisirs": 100000}, budgets={"Loisirs": 120000},
+                        epargne_totale=1000000, besoins_moyens=200000)
+    r = score_sante(parfait)
+    assert r["score"] == 100 and r["niveau"] == "Excellente"
+    assert all(c["conseil"] is None for c in r["criteres"])
+    difficile = StatsMois(revenus=300000, depenses=390000,
+                          par_groupe={"besoin": 210000, "envie": 180000},
+                          par_categorie={"Loisirs": 180000}, budgets={"Loisirs": 50000},
+                          epargne_totale=0, besoins_moyens=200000)
+    r = score_sante(difficile)
+    points = {c["nom"]: c["points"] for c in r["criteres"]}
+    # Épargne 0, équilibre 20*(1-2*0,3)=8, budgets 0, fonds d'urgence 0, envies 60 % -> 0
+    assert points == {"Épargne": 0, "Équilibre": 8, "Budgets": 0, "Fonds d'urgence": 0, "Envies maîtrisées": 0}
+    assert r["score"] == 8 and r["niveau"] == "À surveiller"
+    assert all(c["conseil"] for c in r["criteres"] if c["points"] < c["max"])
+    # Sans budget ni historique : critères neutres (10/20)
+    neutre = score_sante(StatsMois(100000, 50000, {"besoin": 50000}, {"Logement": 50000}, {}))
+    assert {c["nom"]: c["points"] for c in neutre["criteres"]}["Budgets"] == 10
+
+
+def test_analyses_api(client):
+    h = inscrire(client)
+    ajouter(client, h, "revenu", 400000, "Salaire", d="2026-09-01")
+    ajouter(client, h, "depense", 100000, "Loyer", d="2026-09-01")   # mardi
+    ajouter(client, h, "depense", 30000, "Maquis", d="2026-09-04")   # vendredi
+    ajouter(client, h, "depense", 20000, "Maquis", d="2026-09-11")   # vendredi
+    ajouter(client, h, "depense", 60000, "Tontine", d="2026-09-20")
+    ajouter(client, h, "revenu", 380000, "Salaire", d="2026-08-01")
+    ajouter(client, h, "depense", 90000, "Loyer", d="2026-08-02")
+    r = client.get("/api/analyses?annee=2026&mois=9", headers=h).json()
+    cal = r["calendrier"]
+    assert len(cal["jours"]) == 30 and cal["premier_jour_semaine"] == 1  # 1er septembre 2026 : mardi
+    assert cal["jours"][0]["depenses"] == 100000 and cal["jours"][3]["nb"] == 1
+    assert cal["total_mois"] == 210000 and cal["moyenne_par_jour"] == 7000 and cal["jours_sans_depense"] == 26
+    assert cal["plus_gros_jour"]["date"] == "2026-09-01"
+    vendredi = next(j for j in cal["semaine"] if j["jour"] == "vendredi")
+    assert vendredi["moyenne"] == round(50000 / 13)  # 13 vendredis du 1er juillet au 30 septembre
+    assert len(r["evolution_score"]) == 6 and r["evolution_score"][-1]["mois"] == "2026-09"
+    assert r["evolution_score"][0]["score"] is None and r["evolution_score"][-1]["score"] == r["score"]["score"]
+    assert r["score"]["score"] > 0 and len(r["score"]["criteres"]) == 5
+    assert r["moyennes_categories"]["Logement"] == round(190000 / 3)
+    assert r["revenus_moyens"] == round(780000 / 3)
+    autre = inscrire(client, "kofi@test.ci")
+    assert client.get("/api/analyses?annee=2026&mois=9", headers=autre).json()["calendrier"]["total_mois"] == 0
