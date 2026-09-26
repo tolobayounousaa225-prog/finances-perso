@@ -66,6 +66,18 @@ Sans configuration, les emails sont **simulés** : ils s'affichent dans les logs
 
 **Comment ça marche.** Une tâche tourne chaque jour à 8 h. Elle envoie le bilan du mois écoulé à tous ceux qui ne l'ont pas encore reçu, jusqu'au 7 du mois. Si le serveur était arrêté le 1er, le bilan part donc quand même au redémarrage. Chaque envoi est mémorisé en base : un email ne part jamais deux fois. Les utilisateurs sans aucun mouvement le mois précédent ne reçoivent pas de bilan vide.
 
+## Mise en ligne gratuite : Render + Supabase (sans carte bancaire)
+
+Render (offre gratuite) fait tourner l'application : l'API et l'interface sont servies à la même adresse. Supabase (offre gratuite) garde les données dans PostgreSQL.
+
+1. **Supabase** : crée un projet `finances-perso`, **note son mot de passe**, puis clique sur *Connect*. Copie l'adresse **Session pooler**, qui commence par `postgresql://postgres.xxxx:[YOUR-PASSWORD]@aws-0-...pooler.supabase.com:5432/postgres`, et remplace `[YOUR-PASSWORD]` par ton mot de passe.
+2. **Render** : *New* → *Blueprint* → choisis ce dépôt. Render lit `render.yaml`, génère `SECRET_KEY` tout seul et demande `DATABASE_URL` : colle l'adresse de l'étape 1.
+3. Ouvre l'adresse `https://finances-perso-xxxx.onrender.com` donnée par Render.
+
+Les tables sont rangées dans le schéma `finances` (variable `DB_SCHEMA`), qui peut donc partager une base existante. Chaque push sur `main` redéploie automatiquement.
+
+⚠️ Sur l'offre gratuite, Render met l'application en veille après 15 minutes sans visite : le premier chargement suivant prend environ 1 minute. Les bilans mensuels manqués pendant la veille partent au réveil (rattrapage jusqu'au 7 du mois).
+
 ## Mise en ligne : frontend sur GitHub Pages, backend sur le VPS Contabo
 
 ```

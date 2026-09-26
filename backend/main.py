@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from auth import creer_token, get_current_user, hacher, verifier
 from categorisation import CATEGORIES_PAR_DEFAUT, categoriser, mot_cle_a_apprendre
-from database import Base, SessionLocal, engine, get_db
+from database import Base, SessionLocal, engine, get_db, preparer_schema
 from emails import envoyer_email, smtp_configure
 from models import Budget, Categorie, JournalAudit, Mouvement, RegleCategorie, User
 from notifications import contenu_bilan, verifier_alerte_budget
@@ -39,6 +39,7 @@ FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "f
 # Démarrage : création des tables et des catégories par défaut
 # ---------------------------------------------------------------------------
 def initialiser_base():
+    preparer_schema()
     Base.metadata.create_all(bind=engine)
     with Session(engine) as db:
         existantes = {c.nom for c in db.query(Categorie).all()}
