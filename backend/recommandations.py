@@ -8,6 +8,7 @@ Chaque règle est une petite fonction qui regarde les chiffres du mois et renvoi
 Plus tard, on pourra envoyer `stats` à une IA (Claude) pour des conseils rédigés.
 """
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Dict, List
 
 # Règle 50/30/20 : part idéale du revenu pour chaque groupe de dépenses
@@ -24,6 +25,7 @@ class StatsMois:
     moyenne_3_mois: Dict[str, float] = field(default_factory=dict)  # dépenses moyennes par catégorie
     epargne_totale: int = 0                   # cumul de tout ce qui a été mis en épargne
     besoins_moyens: float = 0                 # dépenses « besoin » moyennes par mois
+    objectifs: List[dict] = field(default_factory=list)  # objectifs d'épargne (voir objectifs.py)
 
 
 def conseil(niveau: str, titre: str, message: str) -> dict:
@@ -106,7 +108,39 @@ def regle_fonds_urgence(s: StatsMois) -> List[dict]:
                     "Ton épargne couvre au moins 3 mois de dépenses essentielles.")]
 
 
-REGLES = [regle_solde_negatif, regle_budgets, regle_50_30_20, regle_hausse_categorie, regle_fonds_urgence]
+MOIS_FR = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+           "août", "septembre", "octobre", "novembre", "décembre"]
+
+
+def regle_objectifs(s: StatsMois) -> List[dict]:
+    res = []
+    for o in s.objectifs:
+        if o["statut"] == "atteint":
+            res.append(conseil("bravo", f"Objectif « {o['nom']} » atteint",
+                               f"Tu as mis de côté {fcfa(o['epargne'])} sur {fcfa(o['montant_cible'])}. Bravo !"))
+        elif o["statut"] == "echeance_depassee":
+            res.append(conseil("alerte", f"Objectif « {o['nom']} » : échéance dépassée",
+                               f"Il manque encore {fcfa(o['reste'])}. Fixe une nouvelle date limite réaliste."))
+        elif o["par_mois_conseille"]:
+            limite = date.fromisoformat(o["date_limite"])
+            echeance = f"{fcfa(o['montant_cible'])} d'ici {MOIS_FR[limite.month - 1]} {limite.year}"
+            titre = f"Objectif « {o['nom']} » : {o['pourcentage']} %"
+            if o["versement_auto"] >= o["par_mois_conseille"]:
+                res.append(conseil("bravo", titre, f"Ton versement automatique de {fcfa(o['versement_auto'])} par mois "
+                                                   f"suffit pour atteindre {echeance}."))
+            elif o["versement_auto"]:
+                res.append(conseil("conseil", titre, f"Ton versement automatique ({fcfa(o['versement_auto'])} par mois) "
+                                                     f"ne suffit pas : passe-le à {fcfa(o['par_mois_conseille'])} "
+                                                     f"pour atteindre {echeance}."))
+            else:
+                res.append(conseil("conseil", titre, f"Mets de côté {fcfa(o['par_mois_conseille'])} par mois pour "
+                                                     f"atteindre {echeance}. Astuce : crée un mouvement récurrent "
+                                                     "lié à cet objectif pour que ce soit automatique."))
+    return res
+
+
+REGLES = [regle_solde_negatif, regle_budgets, regle_50_30_20, regle_hausse_categorie, regle_fonds_urgence,
+          regle_objectifs]
 
 ORDRE_NIVEAU = {"alerte": 0, "conseil": 1, "bravo": 2}
 

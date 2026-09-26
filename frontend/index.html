@@ -73,6 +73,13 @@
   .marque img, .marque-auth img { border-radius: 22%; flex: none; }
   .marque-auth { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-bottom: 12px;
                  font-weight: 700; font-size: 20px; }
+  .barre { height: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 999px; overflow: hidden; margin: 8px 0; }
+  .barre > div { height: 100%; background: var(--primary); border-radius: 999px; transition: width .4s; }
+  .barre.atteint > div { background: var(--success); } .barre.retard > div { background: var(--danger); }
+  .objectifs { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .objectif h3 { margin: 0 0 4px; font-size: 16px; display: flex; justify-content: space-between; gap: 8px; }
+  .objectif .chiffres { display: flex; justify-content: space-between; font-size: 14px; }
+  tr.inactif td { opacity: .5; }
   pre { white-space: pre-wrap; margin: 0; font-size: 12px; color: var(--muted); }
 </style>
 </head>
@@ -101,6 +108,7 @@
     <nav id="onglets">
       <button data-onglet="dashboard" class="active">Tableau de bord</button>
       <button data-onglet="mouvements">Mouvements</button>
+      <button data-onglet="objectifs">🎯 Objectifs</button>
       <button data-onglet="budgets">Budgets</button>
       <button data-onglet="journal">Journal</button>
       <button data-onglet="parametres">Paramètres</button>
@@ -143,6 +151,28 @@
         <div class="suggestion" id="mvt-suggestion"></div>
       </div>
       <div class="card">
+        <h2>🔁 Mouvements récurrents</h2>
+        <p class="muted">Salaire, loyer, abonnements… Ajoute-les une fois : ils seront créés automatiquement chaque mois,
+          le jour choisi (le dernier jour du mois si ce jour n'existe pas, ex. 31 → 30 septembre).</p>
+        <form id="form-recurrent" class="ligne">
+          <select id="rec-type"><option value="depense">Dépense</option><option value="revenu">Revenu</option></select>
+          <input id="rec-libelle" placeholder="Libellé (ex. Loyer)" required>
+          <input id="rec-montant" type="number" min="1" step="1" placeholder="Montant FCFA" required>
+          <label class="muted">Le <input id="rec-jour" type="number" min="1" max="31" value="1" required style="width:70px"> du mois</label>
+          <label class="muted">à partir du <input id="rec-debut" type="date" required></label>
+          <select id="rec-categorie"><option value="">Catégorie automatique</option></select>
+          <select id="rec-objectif"><option value="">Aucun objectif</option></select>
+          <button class="btn" type="submit">Ajouter</button>
+        </form>
+        <div class="suggestion" id="rec-message"></div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Libellé</th><th>Catégorie</th><th>Jour</th><th>Prochaine création</th><th class="montant">Montant</th><th></th></tr></thead>
+            <tbody id="liste-recurrents"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
         <h2>Mouvements du mois</h2>
         <p class="muted">Change la catégorie d'une dépense si elle est mal classée : l'app s'en souviendra pour les prochaines.</p>
         <div class="table-scroll">
@@ -153,6 +183,22 @@
         </div>
         <p><button class="btn secondary" id="export-csv">⬇ Exporter tout en CSV (Excel)</button></p>
       </div>
+    </section>
+
+    <!-- Objectifs d'épargne -->
+    <section id="onglet-objectifs" class="hidden">
+      <div class="card">
+        <h2>🎯 Nouvel objectif d'épargne</h2>
+        <p class="muted">Ex. « Ordinateur », 500 000 FCFA d'ici juin. L'app calcule combien mettre de côté chaque mois.
+          Chaque versement est enregistré comme une dépense « Épargne ».</p>
+        <form id="form-objectif" class="ligne">
+          <input id="obj-nom" placeholder="Nom (ex. Ordinateur)" required>
+          <input id="obj-cible" type="number" min="1" step="1" placeholder="Montant à atteindre (FCFA)" required>
+          <label class="muted">d'ici le <input id="obj-date" type="date"></label>
+          <button class="btn" type="submit">Créer l'objectif</button>
+        </form>
+      </div>
+      <div class="objectifs" id="liste-objectifs"></div>
     </section>
 
     <!-- Budgets -->
@@ -317,7 +363,7 @@ $("onglets").onclick = (e) => {
 $("mois-choisi").onchange = rafraichir;
 
 function rafraichir() {
-  const chargeurs = { dashboard: chargerDashboard, mouvements: chargerMouvements, budgets: chargerBudgets,
+  const chargeurs = { dashboard: chargerDashboard, mouvements: chargerMouvements, objectifs: chargerObjectifs, budgets: chargerBudgets,
                       journal: chargerJournal, parametres: chargerParametres, admin: chargerAdmin };
   chargeurs[ongletActif]().catch((err) => alert(err.message));
 }
@@ -370,12 +416,12 @@ function optionsCategories(selection) {
 
 async function chargerMouvements() {
   const { annee, mois } = moisChoisi();
-  const liste = await api(`/api/mouvements?annee=${annee}&mois=${mois}`);
+  const [liste] = await Promise.all([api(`/api/mouvements?annee=${annee}&mois=${mois}`), chargerRecurrents()]);
   mouvementsAffiches = Object.fromEntries(liste.map((m) => [m.id, m]));
   $("liste-mouvements").innerHTML = liste.map((m) => `
     <tr>
       <td>${m.date.split("-").reverse().join("/")}</td>
-      <td>${esc(m.libelle)}</td>
+      <td>${esc(m.libelle)}${m.recurrent_id ? ' <span class="muted" title="Créé automatiquement (récurrent)">🔁</span>' : ""}${m.objectif_id ? ' <span class="muted" title="Versement vers un objectif">🎯</span>' : ""}</td>
       <td>${m.type === "revenu" ? '<span class="muted">Revenu</span>'
             : `<select data-id="${m.id}" class="changer-cat">${optionsCategories(m.categorie_id)}</select>
                ${m.categorie_auto ? '<span class="muted" title="Classée automatiquement">🤖</span>' : ""}`}</td>
@@ -434,6 +480,112 @@ $("export-csv").onclick = async () => {
   const url = URL.createObjectURL(await r.blob());
   Object.assign(document.createElement("a"), { href: url, download: "mouvements.csv" }).click();
   URL.revokeObjectURL(url);
+};
+
+// ---------------------------------------------------------------- Mouvements récurrents
+const dateCourte = (iso) => iso ? iso.split("-").reverse().join("/") : "–";
+let recurrentsAffiches = {};
+
+async function chargerRecurrents() {
+  const [liste, objectifs] = await Promise.all([api("/api/recurrents"), api("/api/objectifs")]);
+  $("rec-objectif").innerHTML = '<option value="">Aucun objectif</option>' +
+    objectifs.map((o) => `<option value="${o.id}">🎯 ${esc(o.nom)}</option>`).join("");
+  recurrentsAffiches = Object.fromEntries(liste.map((r) => [r.id, r]));
+  $("liste-recurrents").innerHTML = liste.map((r) => `
+    <tr class="${r.actif ? "" : "inactif"}">
+      <td>${esc(r.libelle)}</td>
+      <td>${r.objectif_nom ? "🎯 " + esc(r.objectif_nom) : r.type === "revenu" ? '<span class="muted">Revenu</span>' : esc(r.categorie_nom || "")}</td>
+      <td>le ${r.jour}</td>
+      <td>${r.actif ? dateCourte(r.prochaine_date) : '<span class="muted">arrêté</span>'}</td>
+      <td class="montant ${r.type}">${r.type === "revenu" ? "+" : "−"} ${fcfa(r.montant)}</td>
+      <td>${r.actif ? `<button class="lien" data-arreter="${r.id}">Arrêter</button>`
+                    : `<button class="lien" style="color:var(--primary)" data-reactiver="${r.id}">Réactiver</button>`}</td>
+    </tr>`).join("") || '<tr><td colspan="6" class="muted">Aucun mouvement récurrent pour l\'instant.</td></tr>';
+}
+
+$("form-recurrent").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const type = $("rec-type").value;
+    const r = await api("/api/recurrents", { method: "POST", json: {
+      type, libelle: $("rec-libelle").value, montant: Number($("rec-montant").value), jour: Number($("rec-jour").value),
+      debut: $("rec-debut").value,
+      categorie_id: type === "depense" && $("rec-categorie").value ? Number($("rec-categorie").value) : null,
+      objectif_id: $("rec-objectif").value ? Number($("rec-objectif").value) : null,
+    } });
+    $("rec-libelle").value = ""; $("rec-montant").value = "";
+    $("rec-message").textContent = r.mouvements_crees
+      ? `✅ Ajouté. ${r.mouvements_crees} mouvement(s) déjà dû(s) créé(s) automatiquement.`
+      : `✅ Ajouté. Prochaine création : ${dateCourte(r.prochaine_date)}.`;
+    chargerMouvements();
+  } catch (err) { alert(err.message); }
+};
+
+$("liste-recurrents").onclick = async (e) => {
+  const { arreter, reactiver } = e.target.dataset;
+  if (arreter) {
+    if (!confirm("Arrêter ce mouvement récurrent ? Les mouvements déjà créés sont conservés.")) return;
+    await api(`/api/recurrents/${arreter}`, { method: "DELETE" });
+  } else if (reactiver) {
+    const r = recurrentsAffiches[reactiver];
+    await api(`/api/recurrents/${r.id}`, { method: "PUT", json: {
+      type: r.type, libelle: r.libelle, montant: r.montant, jour: r.jour, categorie_id: r.categorie_id,
+      objectif_id: r.objectif_id, debut: new Date().toISOString().slice(0, 10), actif: true } });
+  } else return;
+  chargerMouvements();
+};
+
+$("rec-type").onchange = () => $("rec-categorie").classList.toggle("hidden", $("rec-type").value === "revenu");
+
+// ---------------------------------------------------------------- Objectifs d'épargne
+async function chargerObjectifs() {
+  const liste = await api("/api/objectifs");
+  $("liste-objectifs").innerHTML = liste.map((o) => {
+    const classe = o.statut === "atteint" ? "atteint" : o.statut === "echeance_depassee" ? "retard" : "";
+    const info = o.statut === "atteint" ? "🎉 Objectif atteint !"
+      : o.statut === "echeance_depassee" ? `⚠️ Échéance dépassée : il manque ${fcfa(o.reste)}`
+      : o.par_mois_conseille ? `Mets de côté <b>${fcfa(o.par_mois_conseille)}</b> par mois pendant ${o.mois_restants} mois`
+      : `Il reste ${fcfa(o.reste)} à épargner`;
+    return `<div class="card objectif">
+      <h3><span>🎯 ${esc(o.nom)}</span><span>${o.pourcentage} %</span></h3>
+      <div class="muted">${o.date_limite ? "D'ici le " + dateCourte(o.date_limite) : "Sans date limite"}</div>
+      <div class="barre ${classe}"><div style="width:${o.pourcentage}%"></div></div>
+      <div class="chiffres"><span class="revenu">${fcfa(o.epargne)}</span><span class="muted">sur ${fcfa(o.montant_cible)}</span></div>
+      <p style="font-size:14px">${info}</p>
+      <form class="ligne verser" data-objectif="${o.id}">
+        <input type="number" min="1" step="1" placeholder="Montant FCFA" required>
+        <button class="btn" type="submit">Verser</button>
+      </form>
+      <p><button class="lien" data-archiver-objectif="${o.id}">Archiver l'objectif</button></p>
+    </div>`;
+  }).join("") || '<div class="card muted">Aucun objectif pour l\'instant. Crée ton premier objectif ci-dessus.</div>';
+}
+
+$("form-objectif").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    await api("/api/objectifs", { method: "POST", json: {
+      nom: $("obj-nom").value, montant_cible: Number($("obj-cible").value), date_limite: $("obj-date").value || null } });
+    $("obj-nom").value = ""; $("obj-cible").value = ""; $("obj-date").value = "";
+    chargerObjectifs();
+  } catch (err) { alert(err.message); }
+};
+
+$("liste-objectifs").onsubmit = async (e) => {
+  const form = e.target.closest("form.verser"); if (!form) return;
+  e.preventDefault();
+  try {
+    await api(`/api/objectifs/${form.dataset.objectif}/versements`, { method: "POST",
+      json: { montant: Number(form.querySelector("input").value) } });
+    chargerObjectifs();
+  } catch (err) { alert(err.message); }
+};
+
+$("liste-objectifs").onclick = async (e) => {
+  const id = e.target.dataset.archiverObjectif; if (!id) return;
+  if (!confirm("Archiver cet objectif ? L'argent versé reste compté dans ton épargne, et ses versements récurrents s'arrêtent.")) return;
+  await api(`/api/objectifs/${id}`, { method: "DELETE" });
+  chargerObjectifs();
 };
 
 // ---------------------------------------------------------------- Budgets
@@ -551,6 +703,7 @@ async function demarrer() {
   try { [categories, moi] = await Promise.all([api("/api/categories"), api("/api/me")]); } catch { return; }
   $("bouton-admin").classList.toggle("hidden", moi.role !== "superadmin");
   $("mvt-categorie").innerHTML = '<option value="">Catégorie automatique</option>' + optionsCategories();
+  $("rec-categorie").innerHTML = '<option value="">Catégorie automatique</option>' + optionsCategories();
   $("ecran-auth").classList.add("hidden");
   $("ecran-app").classList.remove("hidden");
   rafraichir();
@@ -559,6 +712,7 @@ async function demarrer() {
 const aujourdhui = new Date();
 $("mois-choisi").value = aujourdhui.toISOString().slice(0, 7);
 $("mvt-date").value = aujourdhui.toISOString().slice(0, 10);
+$("rec-debut").value = aujourdhui.toISOString().slice(0, 10);
 demarrer();
 </script>
 </body>

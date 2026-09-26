@@ -1,7 +1,8 @@
 """
 Tâches planifiées (APScheduler), lancées avec le serveur.
 
-  - chaque jour à 8 h (heure d'Abidjan par défaut) : envoi des bilans mensuels en attente.
+  - chaque jour à 8 h (heure d'Abidjan par défaut) : création des mouvements récurrents dus,
+    puis envoi des bilans mensuels en attente.
     Le 1er du mois, tout le monde reçoit le bilan du mois écoulé ; les jours suivants
     (jusqu'au 7), seuls ceux qui l'auraient manqué le reçoivent.
 
@@ -17,6 +18,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from database import SessionLocal
 from notifications import FUSEAU, envoyer_bilans_du_mois
+from recurrents import generer_mouvements_recurrents
 
 log = logging.getLogger("finances.taches")
 
@@ -24,8 +26,12 @@ log = logging.getLogger("finances.taches")
 def tache_bilans():
     with SessionLocal() as db:
         try:
-            envoyer_bilans_du_mois(db)
+            generer_mouvements_recurrents(db)
         except Exception:  # une erreur ne doit pas arrêter le planificateur
+            log.exception("Erreur pendant la création des mouvements récurrents")
+        try:
+            envoyer_bilans_du_mois(db)
+        except Exception:
             log.exception("Erreur pendant l'envoi des bilans mensuels")
 
 

@@ -9,13 +9,17 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
+# Modules rechargés à chaque test (ils lisent les variables d'environnement à l'import)
+MODULES_APP = ["main", "database", "models", "auth", "statistiques", "notifications", "taches", "emails", "temps",
+               "tracabilite", "objectifs", "recurrents", "recommandations"]
+
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/test.db")
     monkeypatch.setenv("ACTIVER_TACHES", "false")
     monkeypatch.delenv("SMTP_HOST", raising=False)  # emails simulés
-    for mod in ["main", "database", "models", "auth", "statistiques", "notifications", "taches", "emails"]:
+    for mod in MODULES_APP:
         sys.modules.pop(mod, None)
     from fastapi.testclient import TestClient
     import main
@@ -211,7 +215,7 @@ def test_planificateur(client, monkeypatch):
 def test_cors_frontend_github_pages(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/cors.db")
     monkeypatch.setenv("FRONTEND_ORIGINS", "https://moi.github.io/")
-    for mod in ["main", "database", "models", "auth"]:
+    for mod in MODULES_APP:
         sys.modules.pop(mod, None)
     from fastapi.testclient import TestClient
     import main
@@ -247,7 +251,7 @@ def test_cle_secrete_generee_et_gardee_en_base(client, monkeypatch):
 
 def test_tache_bilans_http(client, monkeypatch):
     monkeypatch.delenv("CRON_SECRET", raising=False)
-    assert client.get("/api/taches/bilans").json() == {"bilans_envoyes": 0}
+    assert client.get("/api/taches/bilans").json() == {"mouvements_recurrents": 0, "bilans_envoyes": 0}
     monkeypatch.setenv("CRON_SECRET", "abc")
     assert client.get("/api/taches/bilans").status_code == 401
     r = client.get("/api/taches/bilans", headers={"Authorization": "Bearer abc"})
@@ -257,7 +261,7 @@ def test_tache_bilans_http(client, monkeypatch):
 def test_point_entree_vercel(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/vercel.db")
     monkeypatch.setenv("VERCEL", "1")
-    for mod in ["main", "database", "models", "auth", "statistiques", "notifications", "taches", "emails", "index"]:
+    for mod in MODULES_APP + ["index"]:
         sys.modules.pop(mod, None)
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
     import taches
@@ -337,7 +341,7 @@ def test_migration_ajoute_la_colonne_role(tmp_path, monkeypatch):
     con.commit(); con.close()
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{chemin}")
     monkeypatch.setenv("ACTIVER_TACHES", "false")
-    for mod in ["main", "database", "models", "auth", "statistiques", "notifications", "taches", "emails"]:
+    for mod in MODULES_APP:
         sys.modules.pop(mod, None)
     import main
     main.initialiser_base()
@@ -440,3 +444,123 @@ def test_statistiques_sur_plusieurs_mois(client):
     assert "Fonds d'urgence constitué" in titres
     # l'ancienne route donne toujours les mêmes recommandations
     assert client.get("/api/recommandations?annee=2026&mois=9", headers=h).json() == d["recommandations"]
+
+
+# ---------------------------------------------------------------- Mouvements récurrents
+def fixer_date(monkeypatch, jour):
+    """Fait croire à l'application que nous sommes le `jour`."""
+    import notifications
+    import recurrents
+    import main
+    import statistiques
+    for module in (recurrents, main, statistiques, notifications):
+        monkeypatch.setattr(module, "aujourd_hui", lambda: jour)
+
+
+def test_recurrents_crees_automatiquement(client, monkeypatch):
+    from datetime import date
+    h = inscrire(client)
+    fixer_date(monkeypatch, date(2026, 9, 26))
+    # Salaire le 25 depuis juillet : juillet, août et septembre sont créés tout de suite
+    r = client.post("/api/recurrents", headers=h, json={"type": "revenu", "montant": 400000, "libelle": "Salaire",
+                                                        "jour": 25, "debut": "2026-07-01"})
+    assert r.status_code == 201, r.text
+    salaire = r.json()
+    assert salaire["mouvements_crees"] == 3 and salaire["prochaine_date"] == "2026-10-25"
+    # Loyer le 31 : catégorisé automatiquement, et créé le 30 en septembre (mois de 30 jours)
+    loyer = client.post("/api/recurrents", headers=h, json={"type": "depense", "montant": 100000, "libelle": "Loyer",
+                                                           "jour": 31, "debut": "2026-09-01"}).json()
+    assert loyer["categorie_nom"] == "Logement" and loyer["mouvements_crees"] == 0
+    assert loyer["prochaine_date"] == "2026-09-30"
+
+    # Ouvrir l'app ne recrée rien ; le 30, le loyer apparaît
+    client.get("/api/me", headers=h)
+    assert len(client.get("/api/mouvements", headers=h).json()) == 3
+    fixer_date(monkeypatch, date(2026, 9, 30))
+    client.get("/api/me", headers=h)
+    sept = client.get("/api/mouvements?annee=2026&mois=9", headers=h).json()
+    assert {(m["libelle"], m["date"]) for m in sept} == {("Salaire", "2026-09-25"), ("Loyer", "2026-09-30")}
+    assert all(m["recurrent_id"] for m in sept)
+
+    # Un mouvement créé automatiquement puis archivé n'est pas recréé
+    loyer_mvt = next(m for m in sept if m["libelle"] == "Loyer")
+    client.delete(f"/api/mouvements/{loyer_mvt['id']}", headers=h)
+    client.get("/api/me", headers=h)
+    assert len(client.get("/api/mouvements?annee=2026&mois=9", headers=h).json()) == 1
+
+    # Arrêt : plus rien en octobre ; la tâche quotidienne crée le reste pour tout le monde
+    client.delete(f"/api/recurrents/{loyer['id']}", headers=h)
+    fixer_date(monkeypatch, date(2026, 10, 31))
+    assert client.get("/api/taches/bilans").json()["mouvements_recurrents"] == 1  # salaire d'octobre
+    octobre = client.get("/api/mouvements?annee=2026&mois=10", headers=h).json()
+    assert [m["libelle"] for m in octobre] == ["Salaire"]
+    actions = {(j["action"], j["entite"]) for j in client.get("/api/journal", headers=h).json()}
+    assert {("creation automatique", "mouvement"), ("arret", "recurrent")} <= actions
+
+
+def test_recurrents_validation_et_isolation(client, monkeypatch):
+    from datetime import date
+    h = inscrire(client)
+    fixer_date(monkeypatch, date(2026, 9, 26))
+    base = {"type": "depense", "montant": 5000, "libelle": "Netflix", "jour": 5}
+    assert client.post("/api/recurrents", headers=h, json={**base, "jour": 32}).status_code == 422
+    assert client.post("/api/recurrents", headers=h, json={**base, "debut": "2025-01-01"}).status_code == 400
+    r = client.post("/api/recurrents", headers=h, json=base).json()
+    assert r["categorie_nom"] == "Loisirs" and r["mouvements_crees"] == 0  # le 5 est passé : octobre
+    autre = inscrire(client, "kofi@test.ci")
+    assert client.get("/api/recurrents", headers=autre).json() == []
+    assert client.put(f"/api/recurrents/{r['id']}", headers=autre, json=base).status_code == 404
+    assert client.delete(f"/api/recurrents/{r['id']}", headers=autre).status_code == 404
+
+
+# ---------------------------------------------------------------- Objectifs d'épargne
+def test_objectifs_epargne(client, monkeypatch):
+    from datetime import date
+    h = inscrire(client)
+    fixer_date(monkeypatch, date(2026, 9, 26))
+    o = client.post("/api/objectifs", headers=h, json={"nom": "Ordinateur", "montant_cible": 500000,
+                                                       "date_limite": "2027-06-30"}).json()
+    assert o["pourcentage"] == 0 and o["mois_restants"] == 10 and o["par_mois_conseille"] == 50000
+
+    o = client.post(f"/api/objectifs/{o['id']}/versements", headers=h, json={"montant": 100000}).json()
+    assert (o["epargne"], o["pourcentage"], o["reste"], o["par_mois_conseille"]) == (100000, 20, 400000, 40000)
+    versement = client.get("/api/mouvements", headers=h).json()[0]
+    assert versement["categorie_nom"] == "Épargne" and versement["objectif_id"] == o["id"]
+    assert versement["date"] == "2026-09-26"  # sans date : aujourd'hui
+    r = client.post(f"/api/objectifs/{o['id']}/versements", headers=h, json={"montant": 1000, "date": "2026-09-02"})
+    assert r.status_code == 201, r.text
+    assert client.get("/api/mouvements?annee=2026&mois=9", headers=h).json()[-1]["date"] == "2026-09-02"
+    client.delete(f"/api/mouvements/{client.get('/api/mouvements?annee=2026&mois=9', headers=h).json()[-1]['id']}",
+                  headers=h)  # archivé : ne compte plus dans l'objectif
+
+    # Versement automatique chaque mois via un récurrent, compté dans l'objectif
+    r = client.post("/api/recurrents", headers=h, json={"type": "revenu", "montant": 40000, "libelle": "Ordi",
+                                                        "jour": 1, "debut": "2026-09-01", "objectif_id": o["id"]}).json()
+    assert r["type"] == "depense" and r["categorie_nom"] == "Épargne" and r["objectif_nom"] == "Ordinateur"
+    assert client.get("/api/objectifs", headers=h).json()[0]["epargne"] == 140000
+
+    # Le tableau de bord conseille le montant mensuel ; les versements comptent comme épargne
+    client.post("/api/mouvements", headers=h, json={"type": "revenu", "montant": 400000, "libelle": "Salaire",
+                                                    "date": "2026-09-01"})
+    d = client.get("/api/dashboard?annee=2026&mois=9", headers=h).json()
+    assert d["par_groupe"]["epargne"] == 140000
+    reco = next(x for x in d["recommandations"] if "Ordinateur" in x["titre"])
+    assert reco["niveau"] == "bravo" and "40 000 FCFA par mois suffit" in reco["message"]
+    assert "juin 2027" in reco["message"]
+    client.put(f"/api/recurrents/{r['id']}", headers=h, json={"type": "depense", "montant": 20000, "libelle": "Ordi",
+                                                             "jour": 1, "debut": "2026-09-01", "objectif_id": o["id"]})
+    d = client.get("/api/dashboard?annee=2026&mois=9", headers=h).json()
+    reco = next(x for x in d["recommandations"] if "Ordinateur" in x["titre"])
+    assert reco["niveau"] == "conseil" and "passe-le à 36 000 FCFA" in reco["message"]
+
+    # Objectif atteint -> bravo ; archivage -> les versements récurrents s'arrêtent
+    client.post(f"/api/objectifs/{o['id']}/versements", headers=h, json={"montant": 400000})
+    assert client.get("/api/objectifs", headers=h).json()[0]["statut"] == "atteint"
+    d = client.get("/api/dashboard?annee=2026&mois=9", headers=h).json()
+    assert any(x["niveau"] == "bravo" and "Ordinateur" in x["titre"] for x in d["recommandations"])
+    client.delete(f"/api/objectifs/{o['id']}", headers=h)
+    assert client.get("/api/objectifs", headers=h).json() == []
+    assert client.get("/api/recurrents", headers=h).json()[0]["actif"] is False
+
+    autre = inscrire(client, "kofi@test.ci")
+    assert client.post(f"/api/objectifs/{o['id']}/versements", headers=autre, json={"montant": 1}).status_code == 404
