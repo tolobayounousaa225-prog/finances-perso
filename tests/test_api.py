@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 # Modules rechargés à chaque test (ils lisent les variables d'environnement à l'import)
 MODULES_APP = ["main", "database", "models", "auth", "statistiques", "notifications", "taches", "emails", "temps",
-               "tracabilite", "objectifs", "recurrents", "recommandations"]
+               "tracabilite", "objectifs", "recurrents", "recommandations", "bilan_pdf", "conseils_ia"]
 
 
 @pytest.fixture()
@@ -564,3 +564,125 @@ def test_objectifs_epargne(client, monkeypatch):
 
     autre = inscrire(client, "kofi@test.ci")
     assert client.post(f"/api/objectifs/{o['id']}/versements", headers=autre, json={"montant": 1}).status_code == 404
+
+
+# ---------------------------------------------------------------- Export PDF
+def test_bilan_pdf(client, monkeypatch):
+    from datetime import date
+    h = inscrire(client)
+    fixer_date(monkeypatch, date(2026, 9, 26))
+    ajouter(client, h, "revenu", 400000, "Salaire")
+    ajouter(client, h, "depense", 120000, "Loyer d’octobre — appart 🏠")  # caractères hors Latin-1
+    alim = next(c for c in client.get("/api/categories", headers=h).json() if c["nom"] == "Alimentation")
+    client.put("/api/budgets", headers=h, json={"categorie_id": alim["id"], "montant_mensuel": 50000})
+    ajouter(client, h, "depense", 60000, "Marché")
+    o = client.post("/api/objectifs", headers=h, json={"nom": "Ordinateur", "montant_cible": 500000,
+                                                       "date_limite": "2027-06-30"}).json()
+    client.post(f"/api/objectifs/{o['id']}/versements", headers=h, json={"montant": 50000})
+    for i in range(60):  # plusieurs pages
+        ajouter(client, h, "depense", 500, f"Taxi {i}")
+    r = client.get("/api/bilan/pdf?annee=2026&mois=9", headers=h)
+    assert r.status_code == 200 and r.headers["content-type"] == "application/pdf"
+    assert "bilan-2026-09.pdf" in r.headers["content-disposition"]
+    assert r.content.startswith(b"%PDF") and len(r.content) > 3000
+    assert r.content.count(b"/Type /Page\n") >= 2
+    vide = client.get("/api/bilan/pdf?annee=2025&mois=1", headers=h)  # mois sans données
+    assert vide.status_code == 200 and vide.content.startswith(b"%PDF")
+    assert client.get("/api/bilan/pdf?annee=2026&mois=9").status_code == 401
+
+
+# ---------------------------------------------------------------- Conseils IA
+def test_conseils_ia_desactives_sans_cle(client, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    h = inscrire(client)
+    assert client.get("/api/me", headers=h).json()["ia_configuree"] is False
+    assert client.get("/api/conseils-ia?annee=2026&mois=9", headers=h).json()["configuree"] is False
+    assert client.post("/api/conseils-ia?annee=2026&mois=9", headers=h).status_code == 400
+
+
+def faux_client_anthropic(requetes, reponse):
+    """Vrai SDK Anthropic, mais les requêtes HTTP sont interceptées (aucun appel réseau, rien de payé)."""
+    import anthropic
+    import httpx2
+    import json as _json
+
+    def repondre(requete):
+        requetes.append({"url": str(requete.url), "entetes": dict(requete.headers), "corps": _json.loads(requete.content)})
+        return httpx2.Response(200, json=reponse)
+    return anthropic.Anthropic(api_key="cle-de-test", max_retries=0,
+                               http_client=anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(repondre)))
+
+
+REPONSE_IA = {"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-opus-5",
+              "stop_reason": "end_turn", "stop_sequence": None,
+              "usage": {"input_tokens": 500, "output_tokens": 200},
+              "content": [{"type": "text", "text": "- Réduis les sorties au maquis : 30 000 FCFA ce mois-ci.\n"
+                                                   "- Mets 20 000 FCFA dans ta tontine\n  dès le salaire reçu."}]}
+
+
+def test_conseils_ia_requete_envoyee():
+    import conseils_ia
+    from recommandations import StatsMois
+    s = StatsMois(revenus=400000, depenses=250000, par_groupe={"besoin": 200000, "envie": 50000},
+                  par_categorie={"Logement": 150000, "Loisirs": 50000, "Alimentation": 50000}, budgets={"Loisirs": 40000},
+                  objectifs=[{"nom": "Ordi", "montant_cible": 500000, "epargne": 100000, "date_limite": "2027-06-30",
+                              "par_mois_conseille": 40000, "versement_auto": 0, "statut": "en_cours", "reste": 400000}])
+    requetes = []
+    import os as _os
+    _os.environ["ANTHROPIC_API_KEY"] = "cle-de-test"
+    try:
+        texte, modele = conseils_ia.generer_conseils(s, [{"titre": "Budget « Loisirs » dépassé"}], "2026-09",
+                                                     client=faux_client_anthropic(requetes, REPONSE_IA))
+    finally:
+        del _os.environ["ANTHROPIC_API_KEY"]
+    assert modele == "claude-opus-5"
+    assert conseils_ia.resume_texte(texte) == ["Réduis les sorties au maquis : 30 000 FCFA ce mois-ci.",
+                                               "Mets 20 000 FCFA dans ta tontine dès le salaire reçu."]
+    (req,) = requetes
+    assert req["url"].endswith("/v1/messages?beta=true")
+    assert "server-side-fallback-2026-07-01" in req["entetes"]["anthropic-beta"]
+    corps = req["corps"]
+    assert corps["model"] == "claude-opus-5" and corps["fallbacks"] == "default"
+    assert corps["output_config"] == {"effort": "low"} and "français" in corps["system"]
+    envoye = corps["messages"][0]["content"]
+    assert "Logement" in envoye and "Ordi" in envoye and "Budget « Loisirs » dépassé" in envoye
+
+    # Refus du modèle -> message clair
+    refus = {**REPONSE_IA, "stop_reason": "refusal", "content": []}
+    _os.environ["ANTHROPIC_API_KEY"] = "cle-de-test"
+    try:
+        with pytest.raises(conseils_ia.ErreurIA):
+            conseils_ia.generer_conseils(s, [], "2026-09", client=faux_client_anthropic([], refus))
+    finally:
+        del _os.environ["ANTHROPIC_API_KEY"]
+
+
+def test_conseils_ia_api(client, monkeypatch):
+    import main
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "cle-de-test")
+    monkeypatch.setenv("IA_LIMITE_JOUR", "2")
+    appels = []
+
+    def faux_generer(s, alertes, periode):
+        appels.append((s.revenus, periode))
+        return REPONSE_IA["content"][0]["text"], "claude-opus-5"
+    monkeypatch.setattr(main, "generer_conseils", faux_generer)
+    h = inscrire(client)
+    ajouter(client, h, "revenu", 400000, "Salaire")
+    assert client.get("/api/me", headers=h).json()["ia_configuree"] is True
+    assert client.get("/api/conseils-ia?annee=2026&mois=9", headers=h).json()["conseils"] == []
+
+    r = client.post("/api/conseils-ia?annee=2026&mois=9", headers=h)
+    assert r.status_code == 200, r.text
+    assert len(r.json()["conseils"]) == 2 and appels == [(400000, "2026-09")]
+    # Gardés en base : relire ne rappelle pas l'IA ; ils apparaissent aussi dans le PDF
+    assert client.get("/api/conseils-ia?annee=2026&mois=9", headers=h).json()["conseils"] == r.json()["conseils"]
+    assert client.get("/api/bilan/pdf?annee=2026&mois=9", headers=h).status_code == 200
+    assert len(appels) == 1
+    # Limite quotidienne (coût maîtrisé), et chaque demande est journalisée
+    assert client.post("/api/conseils-ia?annee=2026&mois=9", headers=h).status_code == 200
+    assert client.post("/api/conseils-ia?annee=2026&mois=9", headers=h).status_code == 429
+    assert sum(j["entite"] == "conseils_ia" for j in client.get("/api/journal", headers=h).json()) == 2
+    # Isolation : un autre compte ne voit pas ces conseils
+    autre = inscrire(client, "kofi@test.ci")
+    assert client.get("/api/conseils-ia?annee=2026&mois=9", headers=autre).json()["conseils"] == []

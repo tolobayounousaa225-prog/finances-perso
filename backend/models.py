@@ -99,6 +99,18 @@ class ObjectifEpargne(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class ConseilIA(Base):
+    """Derniers conseils rédigés par l'IA pour un mois (gardés pour ne pas repayer un appel)."""
+    __tablename__ = "conseils_ia"
+    __table_args__ = (UniqueConstraint("user_id", "periode"),)
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    periode = Column(String, nullable=False)  # "2026-09"
+    texte = Column(Text, nullable=False)
+    modele = Column(String, nullable=False)
+    date = Column(DateTime, default=datetime.utcnow)
+
+
 class RegleCategorie(Base):
     """Mot-clé appris d'une correction de l'utilisateur : « canal+ » -> Loisirs.
     Prioritaire sur les mots-clés par défaut."""

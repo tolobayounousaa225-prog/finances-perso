@@ -130,6 +130,12 @@
         <div class="kpi"><small>Taux d'épargne</small><b id="kpi-epargne">–</b></div>
       </div>
       <div class="card"><h2>💡 Recommandations</h2><div id="recos"></div></div>
+      <div class="card" id="carte-ia">
+        <h2>🤖 Conseils de l'IA</h2>
+        <div id="ia-conseils"></div>
+        <p class="outils"><button class="btn secondary" id="ia-demander">Demander des conseils à l'IA</button>
+          <span class="muted" id="ia-statut"></span></p>
+      </div>
       <div class="grid">
         <div class="card"><h2>Dépenses par catégorie</h2><div class="chart-box"><canvas id="chart-categories"></canvas></div></div>
         <div class="card"><h2>Évolution sur 6 mois</h2><div class="chart-box"><canvas id="chart-evolution"></canvas></div></div>
@@ -181,7 +187,8 @@
             <tbody id="liste-mouvements"></tbody>
           </table>
         </div>
-        <p><button class="btn secondary" id="export-csv">⬇ Exporter tout en CSV (Excel)</button></p>
+        <p class="outils" style="flex-wrap:wrap"><button class="btn secondary" id="export-csv">⬇ Exporter tout en CSV (Excel)</button>
+          <button class="btn secondary telecharger-pdf">⬇ Bilan du mois en PDF</button></p>
       </div>
     </section>
 
@@ -245,7 +252,8 @@
       <div class="card">
         <h2>Bilan du mois sélectionné</h2>
         <p class="muted">Aperçu de l'email pour le mois choisi en haut de la page.</p>
-        <p><button class="btn" id="envoyer-bilan">M'envoyer ce bilan maintenant</button> <span class="muted" id="envoi-statut"></span></p>
+        <p><button class="btn" id="envoyer-bilan">M'envoyer ce bilan maintenant</button>
+          <button class="btn secondary telecharger-pdf">⬇ Télécharger en PDF</button> <span class="muted" id="envoi-statut"></span></p>
         <iframe class="apercu" id="apercu-bilan" title="Aperçu du bilan" sandbox></iframe>
       </div>
     </section>
@@ -294,6 +302,7 @@ const cssVar = (nom) => getComputedStyle(document.documentElement).getPropertyVa
 let token = null;
 try { token = localStorage.getItem("token"); } catch {}
 let categories = [];
+let iaConfiguree = false;
 let mouvementsAffiches = {};
 const charts = {};
 
@@ -386,6 +395,7 @@ async function chargerDashboard() {
   $("kpi-solde").className = d.solde >= 0 ? "revenu" : "depense";
   $("kpi-epargne").textContent = d.revenus ? Math.round((d.par_groupe.epargne || 0) * 100 / d.revenus) + " %" : "–";
 
+  chargerConseilsIA().catch(() => {});
   $("recos").innerHTML = recos.map((r) => `<div class="reco ${r.niveau}"><b>${esc(r.titre)}</b><span>${esc(r.message)}</span></div>`).join("")
     || '<p class="muted">Aucune recommandation pour ce mois.</p>';
 
@@ -408,6 +418,46 @@ async function chargerDashboard() {
                scales: { x: { ticks: { color: texte } }, y: { ticks: { color: texte } } } },
   });
 }
+
+// ---------------------------------------------------------------- Conseils IA
+function afficherConseilsIA(r) {
+  $("ia-conseils").innerHTML = r.conseils.length
+    ? r.conseils.map((c) => `<div class="reco"><span style="color:var(--text)">${esc(c)}</span></div>`).join("") +
+      `<p class="muted">Rédigés par l'IA le ${dateFr(r.date)}. Ce sont des suggestions : garde ton esprit critique.</p>`
+    : `<p class="muted">${iaConfiguree
+        ? "Demande à l'IA des conseils personnalisés, rédigés à partir des chiffres du mois (seuls des totaux par catégorie et tes objectifs sont envoyés, jamais ton nom, ton email ni le détail de tes mouvements)."
+        : "Conseils IA non activés sur le serveur (variable ANTHROPIC_API_KEY : voir le README)."}</p>`;
+  $("ia-demander").classList.toggle("hidden", !iaConfiguree);
+  $("ia-demander").textContent = r.conseils.length ? "Actualiser les conseils" : "Demander des conseils à l'IA";
+}
+
+async function chargerConseilsIA() {
+  const { annee, mois } = moisChoisi();
+  $("ia-statut").textContent = "";
+  afficherConseilsIA(await api(`/api/conseils-ia?annee=${annee}&mois=${mois}`));
+}
+
+$("ia-demander").onclick = async () => {
+  const { annee, mois } = moisChoisi();
+  $("ia-demander").disabled = true;
+  $("ia-statut").textContent = "L'IA réfléchit… (quelques secondes)";
+  try {
+    afficherConseilsIA(await api(`/api/conseils-ia?annee=${annee}&mois=${mois}`, { method: "POST" }));
+    $("ia-statut").textContent = "";
+  } catch (err) { $("ia-statut").textContent = err.message; }
+  $("ia-demander").disabled = false;
+};
+
+// ---------------------------------------------------------------- Bilan PDF
+document.querySelectorAll(".telecharger-pdf").forEach((b) => b.onclick = async () => {
+  const { annee, mois } = moisChoisi();
+  try {
+    const r = await api(`/api/bilan/pdf?annee=${annee}&mois=${mois}`);
+    const url = URL.createObjectURL(await r.blob());
+    Object.assign(document.createElement("a"), { href: url, download: `bilan-${annee}-${String(mois).padStart(2, "0")}.pdf` }).click();
+    URL.revokeObjectURL(url);
+  } catch (err) { alert(err.message); }
+});
 
 // ---------------------------------------------------------------- Mouvements
 function optionsCategories(selection) {
@@ -702,6 +752,7 @@ async function demarrer() {
   let moi;
   try { [categories, moi] = await Promise.all([api("/api/categories"), api("/api/me")]); } catch { return; }
   $("bouton-admin").classList.toggle("hidden", moi.role !== "superadmin");
+  iaConfiguree = moi.ia_configuree;
   $("mvt-categorie").innerHTML = '<option value="">Catégorie automatique</option>' + optionsCategories();
   $("rec-categorie").innerHTML = '<option value="">Catégorie automatique</option>' + optionsCategories();
   $("ecran-auth").classList.add("hidden");

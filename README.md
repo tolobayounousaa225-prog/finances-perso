@@ -6,6 +6,8 @@ Application web de gestion financière personnelle (montants en FCFA, plusieurs 
 - **Catégorisation automatique** par mots-clés (Orange, CIE, Yango, marché, loyer…). Si une dépense est mal classée, on la corrige dans la liste : l'app **apprend** le mot-clé pour les prochaines dépenses.
 - **Recommandations** basées sur des règles : 50/30/20, budget dépassé ou presque atteint, hausse inhabituelle d'une catégorie, fonds d'urgence, dépenses supérieures aux revenus.
 - **Budgets mensuels** par catégorie.
+- **Bilan PDF** du mois (chiffres clés, catégories et budgets, objectifs, recommandations, mouvements) : bouton dans *Mouvements* et *Paramètres*.
+- **Conseils rédigés par l'IA** (Claude, facultatif) : sur le tableau de bord, bouton « Demander des conseils à l'IA ». Voir la section « Conseils IA » plus bas.
 - **Mouvements récurrents** : salaire, loyer, abonnements… saisis une fois, puis créés **automatiquement** chaque mois le jour choisi (le dernier jour du mois si ce jour n'existe pas). La création a lieu à l'ouverture de l'app et chaque jour avec la tâche planifiée. Un mois manqué est rattrapé, et rien n'est jamais créé deux fois.
 - **Objectifs d'épargne** (ex. « 500 000 FCFA pour un ordinateur d'ici juin ») : barre de progression, montant à mettre de côté chaque mois et conseil sur le tableau de bord. Un mouvement récurrent lié à l'objectif fait les versements automatiquement.
 - **Traçabilité** : rien n'est supprimé (on archive), et chaque création, modification ou archivage est inscrit dans un journal (valeur avant / après). Export CSV compatible Excel.
@@ -32,6 +34,8 @@ backend/
   objectifs.py         progression des objectifs d'épargne
   tracabilite.py       journal de traçabilité
   temps.py             date du jour (fuseau Africa/Abidjan par défaut)
+  bilan_pdf.py         bilan mensuel en PDF (fpdf2)
+  conseils_ia.py       conseils rédigés par l'IA (Claude, facultatif)
   statistiques.py      calculs (totaux du mois, moyennes…)
   notifications.py     contenu du bilan mensuel et des alertes de budget
   emails.py            envoi SMTP (ou simulation en local)
@@ -78,6 +82,23 @@ Emails envoyés : **bienvenue** à l'inscription, **bilan mensuel** le 1er du mo
 | `FUSEAU_HORAIRE` | `Africa/Abidjan` | fuseau horaire des tâches planifiées |
 
 **Comment ça marche.** Une tâche tourne chaque jour à 8 h. Elle envoie le bilan du mois écoulé à tous ceux qui ne l'ont pas encore reçu, jusqu'au 7 du mois. Si le serveur était arrêté le 1er, le bilan part donc quand même au redémarrage. Chaque envoi est mémorisé en base : un email ne part jamais deux fois. Les utilisateurs sans aucun mouvement le mois précédent ne reçoivent pas de bilan vide.
+
+## Conseils IA (facultatif)
+
+Sans configuration, la carte « Conseils de l'IA » indique simplement que la fonction n'est pas activée : tout le reste marche normalement.
+
+Pour l'activer, il faut une clé de l'API Anthropic. **Attention : ce service est payant** (crédit prépayé, pas d'abonnement). Chaque demande coûte quelques centimes (environ 2 à 5 centimes de dollar avec le modèle par défaut).
+
+1. Crée un compte sur https://console.anthropic.com, ajoute un peu de crédit (*Billing*), puis crée une clé (*API Keys*).
+2. Sur Vercel : *Settings → Environment Variables*, ajoute `ANTHROPIC_API_KEY` (la clé), coche *Production*, puis fais un *Redeploy*.
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | (vide = désactivé) | clé de l'API Anthropic |
+| `ANTHROPIC_MODEL` | `claude-opus-5` | modèle utilisé (ex. `claude-haiku-4-5`, bien moins cher) |
+| `IA_LIMITE_JOUR` | `5` | demandes maximum par utilisateur et par jour (pour maîtriser le coût) |
+
+Seuls des chiffres agrégés sont envoyés : totaux par catégorie, budgets, noms et montants des objectifs, jamais le nom, l'email ni le détail des mouvements. Les conseils sont gardés en base pour le mois (relire la page ne coûte rien) et figurent dans le bilan PDF.
 
 ## Mise en ligne gratuite : Vercel + base Neon (sans carte bancaire)
 
@@ -173,8 +194,8 @@ Pousse sur `main`, ou relance le dernier workflow dans l'onglet *Actions*. Véri
 - [x] Comptes, revenus/dépenses, catégorisation auto + apprentissage, journal
 - [x] Tableau de bord, budgets, recommandations par règles
 - [x] Bilan mensuel envoyé par email le 1er du mois + alertes de budget
-- [ ] Export PDF / Excel du bilan
+- [x] Export PDF du bilan (Excel : export CSV)
 - [x] Revenus et dépenses récurrents (salaire, loyer) saisis automatiquement chaque mois
 - [x] Objectifs d'épargne (ex. « 500 000 FCFA pour un ordinateur d'ici juin »)
-- [ ] Conseils personnalisés rédigés par une IA (Claude), en plus des règles
+- [x] Conseils personnalisés rédigés par une IA (Claude), en plus des règles
 - [ ] Import de relevés (Wave, Orange Money, banque) en CSV
