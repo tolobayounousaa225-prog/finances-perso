@@ -28,7 +28,7 @@ from categorisation import CATEGORIES_PAR_DEFAUT, categoriser, mot_cle_a_apprend
 from database import DATABASE_URL, Base, SessionLocal, ajouter_colonnes_manquantes, engine, get_db, preparer_schema
 from emails import envoyer_email, smtp_configure
 from models import Budget, Categorie, JournalAudit, Mouvement, RegleCategorie, User
-from notifications import contenu_bilan, envoyer_bilans_du_mois, verifier_alerte_budget
+from notifications import contenu_bilan, envoyer_bienvenue, envoyer_bilans_du_mois, verifier_alerte_budget
 from recommandations import generer_recommandations
 from statistiques import bornes_mois, calculer_stats, mois_precedent, total
 from taches import demarrer_planificateur
@@ -60,6 +60,9 @@ def designer_superadmin(db: Session):
     email = os.environ.get("SUPERADMIN_EMAIL", "").strip().lower()
     if email:
         cible = db.query(User).filter(User.email == email).first()
+        if cible:  # le compte désigné devient l'unique super admin
+            db.query(User).filter(User.role == "superadmin", User.id != cible.id).update({"role": "utilisateur"})
+            db.commit()
     elif not db.query(User).filter(User.role == "superadmin").first():
         cible = db.query(User).order_by(User.id).first()
     else:
@@ -198,13 +201,17 @@ def get_mouvement(db: Session, user: User, mouvement_id: int) -> Mouvement:
 # Authentification
 # ---------------------------------------------------------------------------
 @app.post("/api/auth/register")
-def inscription(data: Inscription, db: Session = Depends(get_db)):
+def inscription(data: Inscription, taches: BackgroundTasks, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == data.email).first():
         raise HTTPException(400, "Un compte existe déjà avec cet email")
     user = User(nom=data.nom.strip(), email=data.email, mot_de_passe_hash=hacher(data.mot_de_passe))
     db.add(user)
     db.commit()
     designer_superadmin(db)
+    if os.environ.get("VERCEL"):  # serverless : le travail après la réponse n'est pas garanti
+        envoyer_bienvenue(user)
+    else:
+        taches.add_task(envoyer_bienvenue, user)
     return {"access_token": creer_token(user.id), "token_type": "bearer"}
 
 

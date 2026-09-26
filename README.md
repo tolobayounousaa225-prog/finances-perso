@@ -12,6 +12,7 @@ Application web de gestion financière personnelle (montants en FCFA, plusieurs 
   - **alerte de budget** dès qu'une catégorie atteint 80 % puis 100 % de son plafond.
 
   On peut les activer ou les désactiver dans l'onglet Paramètres, avec un aperçu du bilan et un bouton « M'envoyer ce bilan maintenant ».
+- **Installable sur téléphone** : logo, icônes et manifeste web. Dans le navigateur du téléphone, utilise « Ajouter à l'écran d'accueil ».
 - Chaque compte ne voit que ses propres données.
 - **Super admin** : le premier compte créé (ou celui de `SUPERADMIN_EMAIL`) a un onglet *Administration*. Il y voit la liste de tous les comptes et le détail de chacun (tableau de bord, mouvements, journal), **en lecture seule**. Chaque consultation est inscrite dans son journal.
 
@@ -52,7 +53,12 @@ Lancer les tests : `pytest`
 
 ## Emails (SMTP)
 
-Sans configuration, les emails sont **simulés** : ils s'affichent dans les logs du serveur, ce qui est pratique pour développer. Pour un envoi réel, ajoute ces variables dans `.env` :
+Sans configuration, les emails sont **simulés** : ils s'affichent dans les logs du serveur, ce qui est pratique pour développer. Pour un envoi réel, ajoute ces variables dans `.env`, ou sur Vercel dans *Settings → Environment Variables* puis *Redeploy* :
+
+**Avec Gmail** : active la validation en deux étapes sur ton compte Google, puis crée un [mot de passe d'application](https://myaccount.google.com/apppasswords). C'est un code de 16 lettres, à mettre dans `SMTP_PASSWORD` (le mot de passe habituel du compte ne fonctionne pas).
+
+Emails envoyés : **bienvenue** à l'inscription, **bilan mensuel** le 1er du mois, **alertes de budget** à 80 % et 100 %. Sur Vercel, le lien dans les emails pointe automatiquement vers l'adresse de production (`APP_URL` permet de le changer).
+
 
 | Variable | Exemple | Rôle |
 |---|---|---|
@@ -61,7 +67,7 @@ Sans configuration, les emails sont **simulés** : ils s'affichent dans les logs
 | `SMTP_USER` | `moi@gmail.com` | identifiant |
 | `SMTP_PASSWORD` | `abcd efgh ijkl mnop` | mot de passe (avec Gmail : [mot de passe d'application](https://myaccount.google.com/apppasswords)) |
 | `SMTP_FROM` | `Finances Perso <moi@gmail.com>` | expéditeur affiché (facultatif) |
-| `APP_URL` | `https://tolobayounousaa225-prog.github.io/finances-perso/` | lien « Ouvrir Finances Perso » dans les emails |
+| `APP_URL` | `https://finances-perso-vert.vercel.app` | lien « Ouvrir Finances Perso » (facultatif sur Vercel) |
 | `HEURE_BILAN` | `8` | heure d'envoi du bilan (défaut : 8) |
 | `FUSEAU_HORAIRE` | `Africa/Abidjan` | fuseau horaire des tâches planifiées |
 

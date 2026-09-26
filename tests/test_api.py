@@ -114,8 +114,9 @@ def test_export_csv(client):
 # Emails automatiques : bilan mensuel et alertes de budget
 # ---------------------------------------------------------------------------
 def boite():
+    """Emails simulés, sans les emails de bienvenue (testés à part)."""
     from emails import BOITE_DEV
-    return BOITE_DEV
+    return [m for m in BOITE_DEV if "Bienvenue" not in m["Subject"]]
 
 
 def test_bilan_mensuel_envoye_une_seule_fois(client):
@@ -342,3 +343,65 @@ def test_migration_ajoute_la_colonne_role(tmp_path, monkeypatch):
     main.initialiser_base()
     con = sqlite3.connect(chemin)
     assert con.execute("SELECT role FROM users WHERE id = 1").fetchone()[0] == "superadmin"
+
+
+# ---------------------------------------------------------------------------
+# Email de bienvenue, logo, adresse de l'app dans les emails
+# ---------------------------------------------------------------------------
+def test_email_de_bienvenue(client):
+    from emails import BOITE_DEV
+    inscrire(client, "nouveau@test.ci")
+    mail = next(m for m in BOITE_DEV if "Bienvenue" in m["Subject"])
+    assert mail["To"] == "nouveau@test.ci"
+    html = mail.get_body(("html",)).get_content()
+    assert "/logo-192.png" in html and "Bienvenue, Awa" in html
+
+
+def test_adresse_app_vercel_dans_les_emails(monkeypatch):
+    monkeypatch.delenv("APP_URL", raising=False)
+    monkeypatch.setenv("VERCEL_PROJECT_PRODUCTION_URL", "finances-perso-vert.vercel.app")
+    sys.modules.pop("notifications", None)
+    import notifications
+    assert notifications.APP_URL == "https://finances-perso-vert.vercel.app"
+    sys.modules.pop("notifications", None)
+
+
+def test_super_admin_email_unique(client, monkeypatch):
+    h_premier = inscrire(client, "premier@test.ci")
+    assert client.get("/api/me", headers=h_premier).json()["role"] == "superadmin"
+    monkeypatch.setenv("SUPERADMIN_EMAIL", "chef@test.ci")
+    inscrire(client, "chef@test.ci")
+    assert client.get("/api/me", headers=h_premier).json()["role"] == "utilisateur"
+
+
+def test_logo_et_manifeste_servis(client):
+    for fichier in ["logo.svg", "logo-192.png", "logo-512.png", "favicon.ico", "apple-touch-icon.png",
+                    "manifest.webmanifest"]:
+        assert client.get("/" + fichier).status_code == 200, fichier
+    assert client.get("/manifest.webmanifest").json()["short_name"] == "Finances"
+
+
+def test_envoi_smtp_reel(monkeypatch):
+    """Envoi réel vers un petit serveur SMTP local (sans simulation)."""
+    aiosmtpd = pytest.importorskip("aiosmtpd.controller")
+    recus = []
+
+    class Boite:
+        async def handle_DATA(self, server, session, envelope):
+            recus.append(envelope)
+            return "250 OK"
+
+    serveur = aiosmtpd.Controller(Boite(), hostname="127.0.0.1", port=8025)
+    serveur.start()
+    try:
+        monkeypatch.setenv("SMTP_HOST", "127.0.0.1")
+        monkeypatch.setenv("SMTP_PORT", "8025")
+        monkeypatch.setenv("SMTP_FROM", "Finances Perso <robot@test.ci>")
+        sys.modules.pop("emails", None)
+        import emails
+        assert emails.envoyer_email("awa@test.ci", "Test", "Bonjour", "<p>Bonjour</p>") is True
+    finally:
+        serveur.stop()
+        sys.modules.pop("emails", None)
+    assert recus and recus[0].rcpt_tos == ["awa@test.ci"]
+    assert b"Subject: Test" in recus[0].content
