@@ -526,6 +526,12 @@ def test_objectifs_epargne(client, monkeypatch):
     assert (o["epargne"], o["pourcentage"], o["reste"], o["par_mois_conseille"]) == (100000, 20, 400000, 40000)
     versement = client.get("/api/mouvements", headers=h).json()[0]
     assert versement["categorie_nom"] == "Épargne" and versement["objectif_id"] == o["id"]
+    assert versement["date"] == "2026-09-26"  # sans date : aujourd'hui
+    r = client.post(f"/api/objectifs/{o['id']}/versements", headers=h, json={"montant": 1000, "date": "2026-09-02"})
+    assert r.status_code == 201, r.text
+    assert client.get("/api/mouvements?annee=2026&mois=9", headers=h).json()[-1]["date"] == "2026-09-02"
+    client.delete(f"/api/mouvements/{client.get('/api/mouvements?annee=2026&mois=9', headers=h).json()[-1]['id']}",
+                  headers=h)  # archivé : ne compte plus dans l'objectif
 
     # Versement automatique chaque mois via un récurrent, compté dans l'objectif
     r = client.post("/api/recurrents", headers=h, json={"type": "revenu", "montant": 40000, "libelle": "Ordi",

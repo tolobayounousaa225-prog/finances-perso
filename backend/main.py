@@ -207,9 +207,12 @@ class ObjectifIn(BaseModel):
     date_limite: Optional[date] = None
 
 
+Jour = date  # alias : dans VersementIn, le champ « date » masquerait le type date
+
+
 class VersementIn(BaseModel):
     montant: int = Field(gt=0)
-    date: Optional[date] = None  # vide = aujourd'hui
+    date: Optional[Jour] = None  # vide = aujourd'hui
 
 
 # ---------------------------------------------------------------------------
