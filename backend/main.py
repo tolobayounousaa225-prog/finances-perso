@@ -8,21 +8,24 @@ import io
 import json
 import logging
 import os
+import platform
 from contextlib import asynccontextmanager
 from datetime import date
 from typing import List, Literal, Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy import inspect, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
-from auth import creer_token, get_current_user, hacher, verifier
+from auth import cle_secrete, creer_token, get_current_user, hacher, verifier
 from categorisation import CATEGORIES_PAR_DEFAUT, categoriser, mot_cle_a_apprendre
-from database import Base, SessionLocal, engine, get_db, preparer_schema
+from database import DATABASE_URL, Base, SessionLocal, engine, get_db, preparer_schema
 from emails import envoyer_email, smtp_configure
 from models import Budget, Categorie, JournalAudit, Mouvement, RegleCategorie, User
 from notifications import contenu_bilan, envoyer_bilans_du_mois, verifier_alerte_budget
@@ -59,6 +62,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Finances Perso", lifespan=lifespan)
+log = logging.getLogger("finances.api")
+
+
+@app.exception_handler(Exception)
+async def erreur_inattendue(request: Request, exc: Exception):
+    """Toute erreur imprévue est écrite en entier dans les logs du serveur ; l'utilisateur voit
+    seulement son type (ex. OperationalError), ce qui aide à diagnostiquer sans rien dévoiler."""
+    log.exception("Erreur sur %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500,
+                        content={"detail": f"Erreur interne du serveur ({type(exc).__name__})"})
 
 # Le frontend peut être hébergé ailleurs (ex. GitHub Pages) : on autorise explicitement son adresse.
 # FRONTEND_ORIGINS = liste séparée par des virgules, ex. "https://moi.github.io"
@@ -422,7 +435,59 @@ def tache_bilans_http(authorization: Optional[str] = Header(None), db: Session =
     return {"bilans_envoyes": envoyer_bilans_du_mois(db)}
 
 
+def _masquer(message: str) -> str:
+    """Retire le mot de passe de la base d'un message d'erreur avant de l'afficher."""
+    try:
+        mdp = make_url(DATABASE_URL).password
+    except Exception:
+        mdp = None
+    if mdp:
+        message = message.replace(str(mdp), "***")
+    return message[:300]
+
+
+@app.get("/api/diagnostic")
+def diagnostic():
+    """Vérifie chaque maillon (base, écriture, mot de passe, clé, jeton) et dit lequel bloque.
+    Ne renvoie aucune donnée d'utilisateur ni aucun secret."""
+    resultats = {}
+
+    def verifier_etape(nom, fonction):
+        try:
+            resultats[nom] = {"ok": True, **(fonction() or {})}
+        except Exception as e:  # on veut justement voir l'erreur
+            resultats[nom] = {"ok": False, "erreur": _masquer(f"{type(e).__name__}: {e}")}
+
+    def base():
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"type": engine.dialect.name, "tables": sorted(inspect(engine).get_table_names())}
+
+    def ecriture():
+        with engine.connect() as conn:
+            trans = conn.begin()
+            conn.execute(text("INSERT INTO parametres (cle, valeur) VALUES ('diagnostic', 'test')"))
+            trans.rollback()  # rien n'est gardé
+
+    verifier_etape("base_de_donnees", base)
+    verifier_etape("ecriture", ecriture)
+    verifier_etape("hachage_mot_de_passe", lambda: {"longueur": len(hacher("motdepasse1"))})
+    verifier_etape("cle_secrete", lambda: {"source": "variable SECRET_KEY" if os.environ.get("SECRET_KEY")
+                                           else "générée et gardée en base", "longueur": len(cle_secrete())})
+    verifier_etape("jeton", lambda: {"longueur": len(creer_token(0))})
+    return {
+        "tout_va_bien": all(r["ok"] for r in resultats.values()),
+        "etapes": resultats,
+        "environnement": {
+            "python": platform.python_version(),
+            "vercel": bool(os.environ.get("VERCEL")),
+            "variables_base": [v for v in ("DATABASE_URL", "POSTGRES_URL") if os.environ.get(v)],
+        },
+    }
+
+
 @app.get("/api/health")
+@app.get("/api/index", include_in_schema=False)  # vérifications automatiques de Vercel
 def health():
     return {"status": "ok"}
 
