@@ -30,7 +30,9 @@ def tache_bilans():
 
 
 def demarrer_planificateur():
-    if os.environ.get("ACTIVER_TACHES", "true").lower() == "false":
+    # Sur Vercel, le serveur s'arrête entre deux requêtes : c'est Vercel Cron qui appelle
+    # /api/taches/bilans chaque jour (voir vercel.json).
+    if os.environ.get("ACTIVER_TACHES", "true").lower() == "false" or os.environ.get("VERCEL"):
         return None
     planificateur = BackgroundScheduler(timezone=FUSEAU)
     planificateur.add_job(

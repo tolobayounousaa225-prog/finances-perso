@@ -1,0 +1,6 @@
+.venv
+venv
+tests
+deploy
+*.db
+.env

@@ -11,8 +11,10 @@ import re
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.pool import NullPool
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./finances.db").strip()
+# POSTGRES_URL : nom utilisé par certaines intégrations (ex. base Neon ajoutée depuis Vercel)
+DATABASE_URL = (os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL") or "sqlite:///./finances.db").strip()
 # Certains hébergeurs donnent « postgres://… » : SQLAlchemy attend « postgresql://… »
 DATABASE_URL = re.sub(r"^postgres://", "postgresql://", DATABASE_URL)
 DB_SCHEMA = os.environ.get("DB_SCHEMA", "").strip()
@@ -26,7 +28,10 @@ else:
     connect_args = {"options": f"-csearch_path={DB_SCHEMA}"} if DB_SCHEMA else {}
 
 # pool_pre_ping : vérifie la connexion avant usage (les bases hébergées coupent les connexions inactives)
-engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=not EST_SQLITE)
+# Sur Vercel (serverless), chaque requête peut tourner sur une instance différente : pas de pool.
+SUR_VERCEL = bool(os.environ.get("VERCEL"))
+options_pool = {"poolclass": NullPool} if SUR_VERCEL and not EST_SQLITE else {"pool_pre_ping": not EST_SQLITE}
+engine = create_engine(DATABASE_URL, connect_args=connect_args, **options_pool)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
