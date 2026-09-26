@@ -571,6 +571,15 @@ def diagnostic():
             "vercel": bool(os.environ.get("VERCEL")),
             "variables_base": [v for v in ("DATABASE_URL", "POSTGRES_URL") if os.environ.get(v)],
         },
+        # Noms des variables d'email que l'application voit (jamais leurs valeurs)
+        "emails": {
+            "envoi_reel": smtp_configure(),
+            "variables_presentes": [v for v in ("SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM")
+                                    if os.environ.get(v)],
+            "variables_proches": sorted(v for v in os.environ
+                                        if "SMTP" in v.upper() and v not in ("SMTP_HOST", "SMTP_PORT", "SMTP_USER",
+                                                                             "SMTP_PASSWORD", "SMTP_FROM")),
+        },
     }
 
 
