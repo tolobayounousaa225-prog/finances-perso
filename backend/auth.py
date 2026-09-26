@@ -54,17 +54,30 @@ def cle_secrete() -> str:
     return _cle_en_cache
 
 
-def creer_token(user_id: int) -> str:
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    return jwt.encode({"sub": str(user_id), "exp": expire}, cle_secrete(), algorithm=ALGORITHM)
+def creer_token(user_id: int, type_: str = "acces", minutes: int = ACCESS_TOKEN_EXPIRE_MINUTES) -> str:
+    """type_ « acces » : jeton de connexion ; « 2fa » : jeton temporaire (5 min) qui prouve seulement
+    que le mot de passe est bon, en attendant le code de double authentification."""
+    expire = datetime.utcnow() + timedelta(minutes=minutes)
+    return jwt.encode({"sub": str(user_id), "exp": expire, "typ": type_}, cle_secrete(), algorithm=ALGORITHM)
+
+
+def lire_token(token: str, type_: str) -> int:
+    """Renvoie l'id de l'utilisateur, ou lève ValueError si le jeton est invalide, expiré ou d'un autre type."""
+    try:
+        contenu = jwt.decode(token, cle_secrete(), algorithms=[ALGORITHM])
+    except JWTError:
+        raise ValueError("jeton invalide")
+    if contenu.get("typ", "acces") != type_:  # anciens jetons sans « typ » : jetons de connexion
+        raise ValueError("mauvais type de jeton")
+    return int(contenu["sub"])
 
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
     erreur = HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expirée, reconnecte-toi",
                            headers={"WWW-Authenticate": "Bearer"})
     try:
-        user_id = int(jwt.decode(token, cle_secrete(), algorithms=[ALGORITHM])["sub"])
-    except (JWTError, KeyError, ValueError):
+        user_id = lire_token(token, "acces")
+    except (KeyError, ValueError):
         raise erreur
     user = db.get(User, user_id)
     if not user:

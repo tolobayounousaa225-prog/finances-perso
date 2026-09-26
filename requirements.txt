@@ -10,3 +10,5 @@ APScheduler==3.10.4
 psycopg2-binary==2.9.9
 anthropic==1.8.0
 fpdf2==2.8.8
+pyotp==2.10.0
+qrcode==8.2

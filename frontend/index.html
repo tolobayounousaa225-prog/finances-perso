@@ -80,6 +80,10 @@
   .objectif h3 { margin: 0 0 4px; font-size: 16px; display: flex; justify-content: space-between; gap: 8px; }
   .objectif .chiffres { display: flex; justify-content: space-between; font-size: 14px; }
   tr.inactif td { opacity: .5; }
+  .qr svg { width: 200px; height: 200px; background: #fff; border-radius: 8px; }
+  .codes-secours { font-family: ui-monospace, monospace; display: grid; grid-template-columns: repeat(2, max-content);
+                   gap: 6px 24px; background: var(--bg); padding: 12px; border-radius: 8px; font-size: 15px; }
+  code.secret { word-break: break-all; background: var(--bg); padding: 2px 6px; border-radius: 4px; }
   pre { white-space: pre-wrap; margin: 0; font-size: 12px; color: var(--muted); }
 </style>
 </head>
@@ -94,6 +98,11 @@
       <input id="auth-nom" class="hidden" placeholder="Ton nom">
       <input id="auth-email" type="email" placeholder="Email" required>
       <input id="auth-mdp" type="password" placeholder="Mot de passe (8 caractères min.)" required minlength="8">
+      <div id="auth-etape-2fa" class="hidden">
+        <p class="muted" style="margin:0 0 6px">🔐 Double authentification : saisis le code à 6 chiffres affiché dans ton
+          application d'authentification (ou un code de secours).</p>
+        <input id="auth-code" inputmode="numeric" autocomplete="one-time-code" placeholder="Code à 6 chiffres" style="width:100%">
+      </div>
       <button class="btn" type="submit" id="auth-bouton">Se connecter</button>
       <div class="erreur" id="auth-erreur"></div>
     </form>
@@ -116,6 +125,7 @@
     </nav>
     <div class="outils">
       <input type="month" id="mois-choisi" aria-label="Mois">
+      <button class="btn secondary" id="bouton-discret" title="Masquer / afficher les montants" aria-pressed="false">👁️</button>
       <button class="btn secondary" id="deconnexion" title="Déconnexion">Déconnexion</button>
     </div>
   </header>
@@ -250,6 +260,41 @@
         <p class="muted" id="pref-email"></p>
       </div>
       <div class="card">
+        <h2>🔐 Double authentification</h2>
+        <p class="muted">En plus du mot de passe, un code à 6 chiffres généré par une application sur ton téléphone
+          (Google Authenticator, Microsoft Authenticator, Authy…) sera demandé à chaque connexion.</p>
+        <div id="deuxfa-inactif" class="hidden">
+          <p><button class="btn" id="deuxfa-commencer">Activer la double authentification</button></p>
+          <div id="deuxfa-config" class="hidden">
+            <p><b>1.</b> Installe une application d'authentification, puis scanne ce QR code :</p>
+            <div class="qr" id="deuxfa-qr"></div>
+            <p class="muted">Impossible de scanner ? Saisis cette clé dans l'application : <code class="secret" id="deuxfa-secret"></code></p>
+            <p><b>2.</b> Saisis le code à 6 chiffres affiché par l'application :</p>
+            <form class="ligne" id="deuxfa-form-activer">
+              <input id="deuxfa-code" inputmode="numeric" autocomplete="one-time-code" placeholder="Code à 6 chiffres" required>
+              <button class="btn" type="submit">Confirmer et activer</button>
+            </form>
+          </div>
+        </div>
+        <div id="deuxfa-codes" class="hidden">
+          <div class="info"><b>✅ Double authentification activée.</b> Garde précieusement ces <b>codes de secours</b>
+            (note-les sur papier ou fais une capture) : chacun permet UNE connexion si tu perds ton téléphone.
+            Ils ne seront plus jamais affichés.</div>
+          <div class="codes-secours" id="deuxfa-liste-codes"></div>
+        </div>
+        <div id="deuxfa-actif" class="hidden">
+          <p>✅ <b>Activée.</b> <span class="muted" id="deuxfa-restants"></span></p>
+          <details><summary class="muted" style="cursor:pointer">Désactiver la double authentification</summary>
+            <form class="ligne" id="deuxfa-form-desactiver" style="margin-top:10px">
+              <input id="deuxfa-mdp" type="password" placeholder="Mot de passe" required>
+              <input id="deuxfa-code-off" placeholder="Code à 6 chiffres ou de secours" required>
+              <button class="btn secondary" type="submit">Désactiver</button>
+            </form>
+          </details>
+        </div>
+        <div class="erreur" id="deuxfa-erreur"></div>
+      </div>
+      <div class="card">
         <h2>Bilan du mois sélectionné</h2>
         <p class="muted">Aperçu de l'email pour le mois choisi en haut de la page.</p>
         <p><button class="btn" id="envoyer-bilan">M'envoyer ce bilan maintenant</button>
@@ -296,7 +341,12 @@
 // Adresse de l'API : vide = même serveur que la page. Définie dans config.js (générée au déploiement sur GitHub Pages).
 const API_URL = (window.API_URL || "").replace(/\/$/, "");
 const $ = (id) => document.getElementById(id);
-const fcfa = (n) => Math.round(n).toLocaleString("fr-FR").replace(/[  ]/g, " ") + " FCFA";
+// Mode discret : les montants sont masqués (préférence gardée dans le navigateur)
+let discret = false;
+try { discret = localStorage.getItem("discret") === "1"; } catch {}
+const fcfa = (n) => discret ? "•••• FCFA" : Math.round(n).toLocaleString("fr-FR").replace(/[  ]/g, " ") + " FCFA";
+// Masque aussi les montants écrits dans les textes venant du serveur (recommandations, conseils IA)
+const masquer = (texte) => discret ? String(texte).replace(/[+−-]?\d[\d\s\u00a0\u202f]*(?:\s?FCFA)/g, "•••• FCFA") : texte;
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const cssVar = (nom) => getComputedStyle(document.documentElement).getPropertyValue(nom).trim();
 let token = null;
@@ -327,31 +377,58 @@ function moisChoisi() {
 
 // ---------------------------------------------------------------- Authentification
 let modeInscription = false;
-$("auth-bascule").onclick = (e) => {
-  e.preventDefault();
-  modeInscription = !modeInscription;
+function choisirModeInscription(inscription) {
+  modeInscription = inscription;
   $("auth-titre").textContent = modeInscription ? "Créer un compte" : "Connexion";
   $("auth-bouton").textContent = modeInscription ? "Créer mon compte" : "Se connecter";
   $("auth-bascule").textContent = modeInscription ? "Déjà un compte ? Se connecter" : "Pas encore de compte ? Créer un compte";
   $("auth-nom").classList.toggle("hidden", !modeInscription);
   $("auth-nom").required = modeInscription;
+}
+$("auth-bascule").onclick = (e) => {
+  e.preventDefault();
+  choisirModeInscription(!modeInscription);
 };
+
+let jeton2fa = null;  // mot de passe vérifié, en attente du code de double authentification
+
+function etape2fa(active) {
+  jeton2fa = active;
+  $("auth-etape-2fa").classList.toggle("hidden", !active);
+  ["auth-email", "auth-mdp"].forEach((id) => { $(id).classList.toggle("hidden", !!active); $(id).required = !active; });
+  $("auth-bascule").classList.toggle("hidden", !!active);
+  $("auth-bouton").textContent = active ? "Valider le code" : (modeInscription ? "Créer mon compte" : "Se connecter");
+  if (active) { $("auth-code").value = ""; $("auth-code").focus(); }
+}
 
 $("form-auth").onsubmit = async (e) => {
   e.preventDefault();
   $("auth-erreur").textContent = "";
   try {
-    const res = modeInscription
-      ? await api("/api/auth/register", { method: "POST", json: { nom: $("auth-nom").value, email: $("auth-email").value, mot_de_passe: $("auth-mdp").value } })
-      : await api("/api/auth/login", { method: "POST", body: new URLSearchParams({ username: $("auth-email").value, password: $("auth-mdp").value }) });
+    let res;
+    if (jeton2fa) {
+      res = await api("/api/auth/2fa", { method: "POST", json: { jeton_2fa: jeton2fa, code: $("auth-code").value } });
+    } else if (modeInscription) {
+      res = await api("/api/auth/register", { method: "POST", json: { nom: $("auth-nom").value, email: $("auth-email").value, mot_de_passe: $("auth-mdp").value } });
+    } else {
+      res = await api("/api/auth/login", { method: "POST", body: new URLSearchParams({ username: $("auth-email").value, password: $("auth-mdp").value }) });
+      if (res.deux_facteurs) { etape2fa(res.jeton_2fa); return; }
+    }
+    etape2fa(null);
+    $("auth-mdp").value = "";
     token = res.access_token;
     try { localStorage.setItem("token", token); } catch {}
     demarrer();
-  } catch (err) { $("auth-erreur").textContent = err.message; }
+  } catch (err) {
+    $("auth-erreur").textContent = err.message;
+    if (jeton2fa && err.message.startsWith("Délai")) etape2fa(null);
+  }
 };
 
 function deconnecter() {
   token = null;
+  choisirModeInscription(false);  // après une déconnexion, on revient à l'écran « Connexion »
+  etape2fa(null);
   adminCompteOuvert = null;
   $("bouton-admin").classList.add("hidden");
   try { localStorage.removeItem("token"); } catch {}
@@ -396,7 +473,7 @@ async function chargerDashboard() {
   $("kpi-epargne").textContent = d.revenus ? Math.round((d.par_groupe.epargne || 0) * 100 / d.revenus) + " %" : "–";
 
   chargerConseilsIA().catch(() => {});
-  $("recos").innerHTML = recos.map((r) => `<div class="reco ${r.niveau}"><b>${esc(r.titre)}</b><span>${esc(r.message)}</span></div>`).join("")
+  $("recos").innerHTML = recos.map((r) => `<div class="reco ${r.niveau}"><b>${esc(masquer(r.titre))}</b><span>${esc(masquer(r.message))}</span></div>`).join("")
     || '<p class="muted">Aucune recommandation pour ce mois.</p>';
 
   if (typeof Chart === "undefined") return;  // graphiques indisponibles hors connexion
@@ -415,14 +492,14 @@ async function chargerDashboard() {
       { label: "Dépenses", data: d.evolution.map((e) => e.depenses), backgroundColor: cssVar("--danger") },
     ] },
     options: { maintainAspectRatio: false, plugins: { legend: { labels: { color: texte } } },
-               scales: { x: { ticks: { color: texte } }, y: { ticks: { color: texte } } } },
+               scales: { x: { ticks: { color: texte } }, y: { ticks: { color: texte, display: !discret } } } },
   });
 }
 
 // ---------------------------------------------------------------- Conseils IA
 function afficherConseilsIA(r) {
   $("ia-conseils").innerHTML = r.conseils.length
-    ? r.conseils.map((c) => `<div class="reco"><span style="color:var(--text)">${esc(c)}</span></div>`).join("") +
+    ? r.conseils.map((c) => `<div class="reco"><span style="color:var(--text)">${esc(masquer(c))}</span></div>`).join("") +
       `<p class="muted">Rédigés par l'IA le ${dateFr(r.date)}. Ce sont des suggestions : garde ton esprit critique.</p>`
     : `<p class="muted">${iaConfiguree
         ? "Demande à l'IA des conseils personnalisés, rédigés à partir des chiffres du mois (seuls des totaux par catégorie et tes objectifs sont envoyés, jamais ton nom, ton email ni le détail de tes mouvements)."
@@ -672,6 +749,7 @@ async function chargerJournal() {
 async function chargerParametres() {
   const { annee, mois } = moisChoisi();
   const moi = await api("/api/me");
+  afficher2fa(moi);
   $("pref-bilan").checked = moi.recevoir_bilan;
   $("pref-alertes").checked = moi.recevoir_alertes;
   $("pref-email").textContent = "Les emails sont envoyés à " + moi.email;
@@ -695,6 +773,61 @@ $("envoyer-bilan").onclick = async () => {
     $("envoi-statut").textContent = r.simule ? "Email simulé (SMTP non configuré)." : "✅ Email envoyé !";
   } catch (err) { $("envoi-statut").textContent = err.message; }
 };
+
+// ---------------------------------------------------------------- Double authentification
+function afficher2fa(moi) {
+  $("deuxfa-erreur").textContent = "";
+  $("deuxfa-inactif").classList.toggle("hidden", moi.deux_facteurs);
+  $("deuxfa-actif").classList.toggle("hidden", !moi.deux_facteurs);
+  $("deuxfa-config").classList.add("hidden");
+  $("deuxfa-commencer").classList.remove("hidden");
+  $("deuxfa-restants").textContent = `${moi.codes_secours_restants} code(s) de secours restant(s).`;
+}
+
+$("deuxfa-commencer").onclick = async () => {
+  try {
+    const p = await api("/api/2fa/preparer", { method: "POST" });
+    $("deuxfa-qr").innerHTML = p.qr_svg;  // SVG produit par notre serveur
+    $("deuxfa-secret").textContent = p.secret;
+    $("deuxfa-config").classList.remove("hidden");
+    $("deuxfa-commencer").classList.add("hidden");
+    $("deuxfa-code").focus();
+  } catch (err) { $("deuxfa-erreur").textContent = err.message; }
+};
+
+$("deuxfa-form-activer").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const r = await api("/api/2fa/activer", { method: "POST", json: { code: $("deuxfa-code").value } });
+    $("deuxfa-liste-codes").innerHTML = r.codes_secours.map((c) => `<span>${esc(c)}</span>`).join("");
+    $("deuxfa-codes").classList.remove("hidden");
+    $("deuxfa-code").value = "";
+    afficher2fa(await api("/api/me"));
+  } catch (err) { $("deuxfa-erreur").textContent = err.message; }
+};
+
+$("deuxfa-form-desactiver").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    await api("/api/2fa/desactiver", { method: "POST", json: { mot_de_passe: $("deuxfa-mdp").value, code: $("deuxfa-code-off").value } });
+    $("deuxfa-mdp").value = ""; $("deuxfa-code-off").value = "";
+    $("deuxfa-codes").classList.add("hidden");
+    afficher2fa(await api("/api/me"));
+  } catch (err) { $("deuxfa-erreur").textContent = err.message; }
+};
+
+// ---------------------------------------------------------------- Mode discret
+function appliquerDiscret() {
+  $("bouton-discret").textContent = discret ? "🙈" : "👁️";
+  $("bouton-discret").setAttribute("aria-pressed", String(discret));
+}
+$("bouton-discret").onclick = () => {
+  discret = !discret;
+  try { localStorage.setItem("discret", discret ? "1" : "0"); } catch {}
+  appliquerDiscret();
+  rafraichir();
+};
+appliquerDiscret();
 
 // ---------------------------------------------------------------- Administration (super admin)
 const dateFr = (iso) => iso ? new Date(iso + "Z").toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" }) : "–";

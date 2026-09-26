@@ -22,6 +22,11 @@ class User(Base):
     recevoir_alertes = Column(Boolean, default=True, nullable=False)  # alertes de budget par email
     # utilisateur (par défaut) ou superadmin (voit tous les comptes, en lecture seule)
     role = Column(String, default="utilisateur", server_default="utilisateur", nullable=False)
+    # Double authentification (voir deux_facteurs.py) : secret actif, secret en cours d'activation,
+    # empreintes des codes de secours restants (JSON)
+    totp_secret = Column(String, nullable=True)
+    totp_en_attente = Column(String, nullable=True)
+    codes_secours = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

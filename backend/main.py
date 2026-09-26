@@ -26,10 +26,11 @@ from sqlalchemy import func, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
-from auth import cle_secrete, creer_token, get_current_user, hacher, verifier
+from auth import cle_secrete, creer_token, get_current_user, hacher, lire_token, verifier
 from bilan_pdf import generer_bilan_pdf
 from categorisation import CATEGORIES_PAR_DEFAUT, categoriser, mot_cle_a_apprendre
 from conseils_ia import ErreurIA, generer_conseils, ia_configuree, resume_texte
+import deux_facteurs
 from database import DATABASE_URL, Base, SessionLocal, ajouter_colonnes_manquantes, engine, get_db, preparer_schema
 from emails import envoyer_email, smtp_configure
 from models import (Budget, Categorie, ConseilIA, JournalAudit, Mouvement, MouvementRecurrent, ObjectifEpargne, Parametre,
@@ -268,6 +269,55 @@ def connexion(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends
     user = db.query(User).filter(User.email == form.username.strip().lower()).first()
     if not user or not verifier(form.password, user.mot_de_passe_hash):
         raise HTTPException(401, "Email ou mot de passe incorrect")
+    if user.totp_secret:  # double authentification : le code est demandé à l'étape suivante
+        return {"deux_facteurs": True, "jeton_2fa": creer_token(user.id, "2fa", minutes=5)}
+    return {"access_token": creer_token(user.id), "token_type": "bearer"}
+
+
+class Code2FA(BaseModel):
+    jeton_2fa: str
+    code: str
+
+
+MAX_ECHECS_2FA = 5  # par tranche de 10 minutes : empêche d'essayer tous les codes
+
+
+def trop_d_echecs_2fa(db: Session, user: User) -> bool:
+    depuis = datetime.utcnow() - timedelta(minutes=10)
+    return db.query(func.count(JournalAudit.id)).filter(
+        JournalAudit.user_id == user.id, JournalAudit.action == "echec 2fa", JournalAudit.date >= depuis
+    ).scalar() >= MAX_ECHECS_2FA
+
+
+def verifier_code_2fa(db: Session, user: User, code: str) -> bool:
+    """Code de l'application d'authentification, ou code de secours (consommé). Les échecs sont journalisés."""
+    if deux_facteurs.code_totp_valide(user.totp_secret, code):
+        return True
+    restantes = deux_facteurs.utiliser_code_secours(user.codes_secours, code)
+    if restantes is not None:
+        user.codes_secours = restantes
+        journaliser(db, user, "code de secours utilise", "securite", user.id,
+                    apres={"codes_restants": deux_facteurs.nb_codes_restants(restantes)})
+        db.commit()
+        return True
+    journaliser(db, user, "echec 2fa", "securite", user.id)
+    db.commit()
+    return False
+
+
+@app.post("/api/auth/2fa")
+def connexion_2fa(data: Code2FA, db: Session = Depends(get_db)):
+    """Deuxième étape de la connexion : jeton temporaire (mot de passe déjà vérifié) + code à 6 chiffres."""
+    try:
+        user = db.get(User, lire_token(data.jeton_2fa, "2fa"))
+    except (KeyError, ValueError):
+        user = None
+    if not user or not user.totp_secret:
+        raise HTTPException(401, "Délai dépassé : reconnecte-toi avec ton mot de passe")
+    if trop_d_echecs_2fa(db, user):
+        raise HTTPException(429, "Trop de codes incorrects. Réessaie dans 10 minutes.")
+    if not verifier_code_2fa(db, user, data.code):
+        raise HTTPException(401, "Code incorrect")
     return {"access_token": creer_token(user.id), "token_type": "bearer"}
 
 
@@ -281,12 +331,67 @@ def moi(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
         log.exception("Erreur pendant la création des mouvements récurrents")
     return {"id": user.id, "nom": user.nom, "email": user.email, "role": user.role, "recevoir_bilan": user.recevoir_bilan,
             "recevoir_alertes": user.recevoir_alertes, "smtp_configure": smtp_configure(),
-            "ia_configuree": ia_configuree()}
+            "ia_configuree": ia_configuree(), "deux_facteurs": bool(user.totp_secret),
+            "codes_secours_restants": deux_facteurs.nb_codes_restants(user.codes_secours) if user.totp_secret else 0}
 
 
 @app.put("/api/me/preferences")
 def modifier_preferences(data: Preferences, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     user.recevoir_bilan, user.recevoir_alertes = data.recevoir_bilan, data.recevoir_alertes
+    db.commit()
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Double authentification (activation / désactivation)
+# ---------------------------------------------------------------------------
+class CodeSeul(BaseModel):
+    code: str
+
+
+class Desactivation2FA(BaseModel):
+    mot_de_passe: str
+    code: str
+
+
+@app.post("/api/2fa/preparer")
+def preparer_2fa(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Étape 1 : un nouveau secret, à scanner (QR code) dans l'application d'authentification."""
+    if user.totp_secret:
+        raise HTTPException(400, "La double authentification est déjà activée")
+    user.totp_en_attente = deux_facteurs.nouveau_secret()
+    db.commit()
+    lien = deux_facteurs.lien_otpauth(user.totp_en_attente, user.email)
+    return {"secret": user.totp_en_attente, "lien": lien, "qr_svg": deux_facteurs.qr_code_svg(lien)}
+
+
+@app.post("/api/2fa/activer")
+def activer_2fa(data: CodeSeul, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Étape 2 : le premier code prouve que le téléphone est bien configuré. Renvoie les codes de secours
+    (affichés une seule fois)."""
+    if user.totp_secret:
+        raise HTTPException(400, "La double authentification est déjà activée")
+    if not deux_facteurs.code_totp_valide(user.totp_en_attente, data.code):
+        raise HTTPException(400, "Code incorrect : vérifie l'heure de ton téléphone et réessaie")
+    codes, empreintes = deux_facteurs.nouveaux_codes_secours()
+    user.totp_secret, user.totp_en_attente, user.codes_secours = user.totp_en_attente, None, empreintes
+    journaliser(db, user, "activation 2fa", "securite", user.id)
+    db.commit()
+    return {"ok": True, "codes_secours": codes}
+
+
+@app.post("/api/2fa/desactiver")
+def desactiver_2fa(data: Desactivation2FA, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    if not user.totp_secret:
+        raise HTTPException(400, "La double authentification n'est pas activée")
+    if not verifier(data.mot_de_passe, user.mot_de_passe_hash):
+        raise HTTPException(400, "Mot de passe incorrect")
+    if trop_d_echecs_2fa(db, user):
+        raise HTTPException(429, "Trop de codes incorrects. Réessaie dans 10 minutes.")
+    if not verifier_code_2fa(db, user, data.code):
+        raise HTTPException(400, "Code incorrect")
+    user.totp_secret = user.totp_en_attente = user.codes_secours = None
+    journaliser(db, user, "desactivation 2fa", "securite", user.id)
     db.commit()
     return {"ok": True}
 

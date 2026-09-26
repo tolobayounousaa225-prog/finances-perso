@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 # Modules rechargés à chaque test (ils lisent les variables d'environnement à l'import)
 MODULES_APP = ["main", "database", "models", "auth", "statistiques", "notifications", "taches", "emails", "temps",
-               "tracabilite", "objectifs", "recurrents", "recommandations", "bilan_pdf", "conseils_ia"]
+               "tracabilite", "objectifs", "recurrents", "recommandations", "bilan_pdf", "conseils_ia", "deux_facteurs"]
 
 
 @pytest.fixture()
@@ -686,3 +686,61 @@ def test_conseils_ia_api(client, monkeypatch):
     # Isolation : un autre compte ne voit pas ces conseils
     autre = inscrire(client, "kofi@test.ci")
     assert client.get("/api/conseils-ia?annee=2026&mois=9", headers=autre).json()["conseils"] == []
+
+
+# ---------------------------------------------------------------- Double authentification
+def connecter(client, email="awa@test.ci", mdp="motdepasse1"):
+    return client.post("/api/auth/login", data={"username": email, "password": mdp}).json()
+
+
+def test_double_authentification(client):
+    import pyotp
+    h = inscrire(client)
+    assert client.get("/api/me", headers=h).json()["deux_facteurs"] is False
+    prep = client.post("/api/2fa/preparer", headers=h).json()
+    assert prep["qr_svg"].startswith("<svg") or "<svg" in prep["qr_svg"][:200]
+    assert prep["lien"].startswith("otpauth://totp/Finances%20Perso:awa%40test.ci?secret=")
+    totp = pyotp.TOTP(prep["secret"])
+    assert client.post("/api/2fa/activer", headers=h, json={"code": "000000"}).status_code == 400
+    r = client.post("/api/2fa/activer", headers=h, json={"code": totp.now()})
+    assert r.status_code == 200, r.text
+    codes = r.json()["codes_secours"]
+    assert len(codes) == 8 and len(set(codes)) == 8
+    moi = client.get("/api/me", headers=h).json()
+    assert moi["deux_facteurs"] is True and moi["codes_secours_restants"] == 8
+
+    # La connexion demande maintenant le code : le mot de passe seul ne donne pas de jeton de connexion
+    etape1 = connecter(client)
+    assert etape1["deux_facteurs"] is True and "access_token" not in etape1
+    jeton = etape1["jeton_2fa"]
+    assert client.get("/api/me", headers={"Authorization": f"Bearer {jeton}"}).status_code == 401
+    assert client.post("/api/auth/2fa", json={"jeton_2fa": jeton, "code": "123456"}).status_code == 401
+    r = client.post("/api/auth/2fa", json={"jeton_2fa": jeton, "code": totp.now()})
+    assert r.status_code == 200 and client.get("/api/me", headers={"Authorization": f"Bearer {r.json()['access_token']}"}).status_code == 200
+    # Un jeton de connexion ne remplace pas le jeton temporaire
+    assert client.post("/api/auth/2fa", json={"jeton_2fa": h["Authorization"][7:], "code": totp.now()}).status_code == 401
+
+    # Code de secours : fonctionne une seule fois (en minuscules et sans tiret aussi)
+    secours = codes[0].lower().replace("-", "")
+    assert client.post("/api/auth/2fa", json={"jeton_2fa": connecter(client)["jeton_2fa"], "code": secours}).status_code == 200
+    assert client.post("/api/auth/2fa", json={"jeton_2fa": connecter(client)["jeton_2fa"], "code": secours}).status_code == 401
+    assert client.get("/api/me", headers=h).json()["codes_secours_restants"] == 7
+
+    # Désactivation : mot de passe + code exigés
+    assert client.post("/api/2fa/desactiver", headers=h, json={"mot_de_passe": "faux", "code": totp.now()}).status_code == 400
+    assert client.post("/api/2fa/desactiver", headers=h, json={"mot_de_passe": "motdepasse1", "code": totp.now()}).status_code == 200
+    assert "access_token" in connecter(client)
+    actions = [j["action"] for j in client.get("/api/journal", headers=h).json() if j["entite"] == "securite"]
+    assert {"activation 2fa", "desactivation 2fa", "echec 2fa", "code de secours utilise"} <= set(actions)
+
+
+def test_2fa_limite_les_essais(client):
+    import pyotp
+    h = inscrire(client)
+    secret = client.post("/api/2fa/preparer", headers=h).json()["secret"]
+    client.post("/api/2fa/activer", headers=h, json={"code": pyotp.TOTP(secret).now()})
+    jeton = connecter(client)["jeton_2fa"]
+    for _ in range(5):
+        assert client.post("/api/auth/2fa", json={"jeton_2fa": jeton, "code": "000000"}).status_code == 401
+    # Après 5 échecs, même le bon code est refusé pendant 10 minutes
+    assert client.post("/api/auth/2fa", json={"jeton_2fa": jeton, "code": pyotp.TOTP(secret).now()}).status_code == 429
