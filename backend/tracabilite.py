@@ -12,7 +12,8 @@ from models import JournalAudit, Mouvement, User
 
 def vers_dict(m: Mouvement) -> dict:
     return {"type": m.type, "montant": m.montant, "libelle": m.libelle, "date": m.date.isoformat(),
-            "categorie": m.categorie.nom if m.categorie else None, "archive": m.archive}
+            "categorie": m.categorie.nom if m.categorie else None, "archive": m.archive,
+            **({"etiquettes": " ".join(m.etiquettes.split())} if m.etiquettes else {})}
 
 
 def journaliser(db: Session, user: User, action: str, entite: str, entite_id: int,

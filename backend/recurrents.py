@@ -14,6 +14,7 @@ from typing import Iterator, List, Optional, Tuple
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from etiquettes import hashtags, vers_colonne
 from models import GenerationRecurrente, Mouvement, MouvementRecurrent, User
 from notifications import aujourd_hui, verifier_alerte_budget
 from tracabilite import journaliser, vers_dict
@@ -67,7 +68,8 @@ def generer_mouvements_recurrents(db: Session, user: Optional[User] = None) -> L
             if (r.id, periode) in deja:
                 continue
             m = Mouvement(user_id=r.user_id, type=r.type, montant=r.montant, libelle=r.libelle, date=jour,
-                          categorie_id=r.categorie_id, recurrent_id=r.id, objectif_id=r.objectif_id)
+                          categorie_id=r.categorie_id, recurrent_id=r.id, objectif_id=r.objectif_id,
+                          etiquettes=vers_colonne(hashtags(r.libelle)))
             db.add(m)
             db.flush()
             db.add(GenerationRecurrente(recurrent_id=r.id, periode=periode, mouvement_id=m.id))

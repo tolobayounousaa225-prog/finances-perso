@@ -33,6 +33,7 @@ from conseils_ia import ErreurIA, generer_conseils, ia_configuree, resume_texte
 import deux_facteurs
 from database import DATABASE_URL, Base, SessionLocal, ajouter_colonnes_manquantes, engine, get_db, preparer_schema
 from emails import envoyer_email, smtp_configure
+from etiquettes import combiner, depuis_colonne, hashtags, motif, normaliser_etiquette, vers_colonne
 from models import (Budget, Categorie, ConseilIA, JournalAudit, Mouvement, MouvementRecurrent, ObjectifEpargne, Parametre,
                     RegleCategorie, User)
 from notifications import contenu_bilan, envoyer_bienvenue, envoyer_bilans_du_mois, verifier_alerte_budget
@@ -158,6 +159,9 @@ class MouvementIn(BaseModel):
     libelle: str = Field(min_length=1)
     date: date
     categorie_id: Optional[int] = None  # vide = catégorisation automatique
+    # Étiquettes (#mariage…). Vide (None) lors d'une modification = on garde celles déjà posées.
+    # Les #mots du libellé sont ajoutés automatiquement.
+    etiquettes: Optional[List[str]] = None
 
 
 class MouvementOut(BaseModel):
@@ -173,6 +177,12 @@ class MouvementOut(BaseModel):
     archive: bool
     recurrent_id: Optional[int] = None  # créé automatiquement par un mouvement récurrent
     objectif_id: Optional[int] = None   # versement vers un objectif d'épargne
+    etiquettes: List[str] = []
+
+    @field_validator("etiquettes", mode="before")
+    @classmethod
+    def lire_colonne(cls, v):
+        return depuis_colonne(v) if isinstance(v, str) or v is None else v
 
 
 class CategorieOut(BaseModel):
@@ -436,7 +446,8 @@ def mouvements_de(db: Session, user: User, annee: Optional[int] = None, mois: Op
 def creer_mouvement(data: MouvementIn, taches: BackgroundTasks, db: Session = Depends(get_db),
                     user: User = Depends(get_current_user)):
     m = Mouvement(user_id=user.id, type=data.type, montant=data.montant,
-                  libelle=data.libelle.strip(), date=data.date)
+                  libelle=data.libelle.strip(), date=data.date,
+                  etiquettes=vers_colonne(combiner(data.etiquettes, hashtags(data.libelle))))
     if data.type == "depense":
         if data.categorie_id:
             if not db.get(Categorie, data.categorie_id):
@@ -464,6 +475,8 @@ def modifier_mouvement(mouvement_id: int, data: MouvementIn, taches: BackgroundT
     ancienne_categorie = m.categorie_id
 
     m.type, m.montant, m.libelle, m.date = data.type, data.montant, data.libelle.strip(), data.date
+    base = depuis_colonne(m.etiquettes) if data.etiquettes is None else data.etiquettes
+    m.etiquettes = vers_colonne(combiner(base, hashtags(m.libelle)))
     if data.type == "revenu":
         m.categorie_id, m.categorie_auto = None, False
     elif data.categorie_id and data.categorie_id != ancienne_categorie:
@@ -519,6 +532,78 @@ def archiver_mouvement(mouvement_id: int, db: Session = Depends(get_db), user: U
         journaliser(db, user, "archivage", "mouvement", m.id, avant=avant, apres=vers_dict(m))
         db.commit()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Recherche et étiquettes
+# ---------------------------------------------------------------------------
+LIMITE_RESULTATS = 500
+
+
+@app.get("/api/recherche")
+def recherche(q: Optional[str] = None, type: Optional[Literal["revenu", "depense"]] = None,
+              categorie_id: Optional[int] = None, etiquette: Optional[str] = None,
+              du: Optional[date] = None, au: Optional[date] = None,
+              montant_min: Optional[int] = None, montant_max: Optional[int] = None, archives: bool = False,
+              db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Recherche dans tous les mouvements, avec les totaux des résultats
+    (par catégorie et par mois) : pratique pour suivre une étiquette ou un fournisseur."""
+    requete = db.query(Mouvement).filter(Mouvement.user_id == user.id)
+    if not archives:
+        requete = requete.filter(Mouvement.archive.is_(False))
+    if q and q.strip():
+        requete = requete.filter(func.lower(Mouvement.libelle).contains(q.strip().lower()))
+    if type:
+        requete = requete.filter(Mouvement.type == type)
+    if categorie_id:
+        requete = requete.filter(Mouvement.categorie_id == categorie_id)
+    if etiquette and normaliser_etiquette(etiquette):
+        requete = requete.filter(Mouvement.etiquettes.like(motif(etiquette)))
+    if du:
+        requete = requete.filter(Mouvement.date >= du)
+    if au:
+        requete = requete.filter(Mouvement.date <= au)
+    if montant_min is not None:
+        requete = requete.filter(Mouvement.montant >= montant_min)
+    if montant_max is not None:
+        requete = requete.filter(Mouvement.montant <= montant_max)
+    tous = requete.order_by(Mouvement.date.desc(), Mouvement.id.desc()).all()
+
+    actifs = [m for m in tous if not m.archive]
+    par_categorie, par_mois = {}, {}
+    for m in actifs:
+        if m.type == "depense":
+            nom = m.categorie.nom if m.categorie else "Autres"
+            par_categorie[nom] = par_categorie.get(nom, 0) + m.montant
+        mois = m.date.strftime("%Y-%m")
+        ligne = par_mois.setdefault(mois, {"mois": mois, "revenus": 0, "depenses": 0})
+        ligne["revenus" if m.type == "revenu" else "depenses"] += m.montant
+    return {
+        "nb": len(tous),
+        "total_revenus": sum(m.montant for m in actifs if m.type == "revenu"),
+        "total_depenses": sum(m.montant for m in actifs if m.type == "depense"),
+        "par_categorie": dict(sorted(par_categorie.items(), key=lambda c: -c[1])),
+        "par_mois": sorted(par_mois.values(), key=lambda l: l["mois"]),
+        "mouvements": [mouvement_out(m) for m in tous[:LIMITE_RESULTATS]],
+        "tronque": len(tous) > LIMITE_RESULTATS,
+    }
+
+
+@app.get("/api/etiquettes")
+def liste_etiquettes(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Toutes les étiquettes utilisées, avec leurs totaux (les plus récentes d'abord)."""
+    lignes = (db.query(Mouvement.etiquettes, Mouvement.type, Mouvement.montant, Mouvement.date)
+              .filter(Mouvement.user_id == user.id, Mouvement.archive.is_(False), Mouvement.etiquettes.isnot(None))
+              .all())
+    resume = {}
+    for etiquettes_, type_, montant, jour in lignes:
+        for e in depuis_colonne(etiquettes_):
+            r = resume.setdefault(e, {"nom": e, "nb": 0, "depenses": 0, "revenus": 0, "du": jour, "au": jour})
+            r["nb"] += 1
+            r["depenses" if type_ == "depense" else "revenus"] += montant
+            r["du"], r["au"] = min(r["du"], jour), max(r["au"], jour)
+    return [{**r, "du": r["du"].isoformat(), "au": r["au"].isoformat()}
+            for r in sorted(resume.values(), key=lambda r: r["au"], reverse=True)]
 
 
 # ---------------------------------------------------------------------------
@@ -841,10 +926,10 @@ def export_csv(db: Session = Depends(get_db), user: User = Depends(get_current_u
     buf = io.StringIO()
     buf.write("﻿")  # BOM : Excel reconnaît les accents
     w = csv.writer(buf, delimiter=";")
-    w.writerow(["id", "date", "type", "libelle", "categorie", "montant_fcfa", "archive"])
+    w.writerow(["id", "date", "type", "libelle", "categorie", "montant_fcfa", "etiquettes", "archive"])
     for m in db.query(Mouvement).filter(Mouvement.user_id == user.id).order_by(Mouvement.date):
         w.writerow([m.id, m.date.isoformat(), m.type, m.libelle, m.categorie.nom if m.categorie else "",
-                    m.montant, "oui" if m.archive else "non"])
+                    m.montant, " ".join(depuis_colonne(m.etiquettes)), "oui" if m.archive else "non"])
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
                              headers={"Content-Disposition": "attachment; filename=mouvements.csv"})
 
