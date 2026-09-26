@@ -267,3 +267,19 @@ def test_point_entree_vercel(tmp_path, monkeypatch):
     r = c.post("/api/auth/register", json={"nom": "V", "email": "v@t.ci", "mot_de_passe": "motdepasse1"})
     assert r.status_code == 200
     assert "Finances Perso" in c.get("/").text
+
+
+def test_diagnostic(client):
+    d = client.get("/api/diagnostic").json()
+    assert d["tout_va_bien"] is True, d
+    assert "users" in d["etapes"]["base_de_donnees"]["tables"]
+    assert client.get("/api/diagnostic").json()["etapes"]["ecriture"]["ok"]  # rollback : relançable
+
+
+def test_erreur_inattendue_renvoie_son_type(client, monkeypatch):
+    import main
+    monkeypatch.setattr(main, "hacher", lambda _: (_ for _ in ()).throw(RuntimeError("boum")))
+    from fastapi.testclient import TestClient
+    c = TestClient(main.app, raise_server_exceptions=False)
+    r = c.post("/api/auth/register", json={"nom": "A", "email": "x@t.ci", "mot_de_passe": "motdepasse1"})
+    assert r.status_code == 500 and r.json()["detail"] == "Erreur interne du serveur (RuntimeError)"
