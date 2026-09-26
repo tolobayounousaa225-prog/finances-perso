@@ -8,10 +8,9 @@ la contrainte d'unicité garantit qu'il ne part jamais deux fois, même si le se
 """
 import logging
 import os
-from datetime import date, datetime
+from datetime import date
 from html import escape
 from typing import Optional
-from zoneinfo import ZoneInfo
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -20,10 +19,10 @@ from emails import envoyer_email
 from models import Budget, EmailEnvoye, Mouvement, User
 from recommandations import fcfa, generer_recommandations
 from statistiques import bornes_mois, calculer_stats, depenses_par_categorie, mois_precedent
+from temps import FUSEAU, aujourd_hui  # noqa: F401 (FUSEAU est aussi utilisé par taches.py)
 
 log = logging.getLogger("finances.notifications")
 
-FUSEAU = ZoneInfo(os.environ.get("FUSEAU_HORAIRE", "Africa/Abidjan"))
 # Adresse de l'app dans les emails : APP_URL si elle est définie, sinon l'adresse de production
 # Vercel (variable fournie automatiquement par Vercel), sinon le serveur local.
 _VERCEL = os.environ.get("VERCEL_PROJECT_PRODUCTION_URL")
@@ -39,10 +38,6 @@ def entete_email() -> str:
 MOIS_FR = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet",
            "août", "septembre", "octobre", "novembre", "décembre"]
 SEUILS_ALERTE = (100, 80)  # du plus grave au moins grave
-
-
-def aujourd_hui() -> date:
-    return datetime.now(FUSEAU).date()
 
 
 def reserver(db: Session, user: User, type_: str, cle: str) -> bool:

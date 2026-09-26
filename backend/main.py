@@ -13,7 +13,7 @@ import platform
 import re
 import time
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, timedelta
 from typing import List, Literal, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
@@ -30,11 +30,16 @@ from auth import cle_secrete, creer_token, get_current_user, hacher, verifier
 from categorisation import CATEGORIES_PAR_DEFAUT, categoriser, mot_cle_a_apprendre
 from database import DATABASE_URL, Base, SessionLocal, ajouter_colonnes_manquantes, engine, get_db, preparer_schema
 from emails import envoyer_email, smtp_configure
-from models import Budget, Categorie, JournalAudit, Mouvement, Parametre, RegleCategorie, User
+from models import (Budget, Categorie, JournalAudit, Mouvement, MouvementRecurrent, ObjectifEpargne, Parametre,
+                    RegleCategorie, User)
 from notifications import contenu_bilan, envoyer_bienvenue, envoyer_bilans_du_mois, verifier_alerte_budget
+from objectifs import decrire, objectifs_de
 from recommandations import generer_recommandations
+from recurrents import generer_mouvements_recurrents, prochaine_date
 from statistiques import agregats, bornes_mois, calculer_stats, evolution, fenetre_6_mois
 from taches import demarrer_planificateur
+from temps import aujourd_hui
+from tracabilite import journaliser, vers_dict
 
 # Affiche dans les logs du serveur les messages de nos modules (emails, tâches planifiées…)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s : %(message)s")
@@ -163,6 +168,8 @@ class MouvementOut(BaseModel):
     categorie_nom: Optional[str] = None
     categorie_auto: bool
     archive: bool
+    recurrent_id: Optional[int] = None  # créé automatiquement par un mouvement récurrent
+    objectif_id: Optional[int] = None   # versement vers un objectif d'épargne
 
 
 class CategorieOut(BaseModel):
@@ -183,21 +190,31 @@ class BudgetIn(BaseModel):
     montant_mensuel: int = Field(ge=0)  # 0 = supprimer le budget
 
 
+class RecurrentIn(BaseModel):
+    type: Literal["revenu", "depense"]
+    montant: int = Field(gt=0)
+    libelle: str = Field(min_length=1)
+    jour: int = Field(ge=1, le=31)       # jour du mois (31 = dernier jour du mois)
+    debut: Optional[date] = None         # vide = aujourd'hui
+    categorie_id: Optional[int] = None   # vide = catégorisation automatique
+    objectif_id: Optional[int] = None    # versement automatique vers un objectif d'épargne
+    actif: bool = True
+
+
+class ObjectifIn(BaseModel):
+    nom: str = Field(min_length=1)
+    montant_cible: int = Field(gt=0)
+    date_limite: Optional[date] = None
+
+
+class VersementIn(BaseModel):
+    montant: int = Field(gt=0)
+    date: Optional[date] = None  # vide = aujourd'hui
+
+
 # ---------------------------------------------------------------------------
 # Outils
 # ---------------------------------------------------------------------------
-def vers_dict(m: Mouvement) -> dict:
-    return {"type": m.type, "montant": m.montant, "libelle": m.libelle, "date": m.date.isoformat(),
-            "categorie": m.categorie.nom if m.categorie else None, "archive": m.archive}
-
-
-def journaliser(db: Session, user: User, action: str, entite: str, entite_id: int,
-                avant: Optional[dict] = None, apres: Optional[dict] = None):
-    db.add(JournalAudit(user_id=user.id, action=action, entite=entite, entite_id=entite_id,
-                        avant=json.dumps(avant, ensure_ascii=False) if avant else None,
-                        apres=json.dumps(apres, ensure_ascii=False) if apres else None))
-
-
 def mouvement_out(m: Mouvement) -> MouvementOut:
     out = MouvementOut.model_validate(m)
     out.categorie_nom = m.categorie.nom if m.categorie else None
@@ -250,7 +267,13 @@ def connexion(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends
 
 
 @app.get("/api/me")
-def moi(user: User = Depends(get_current_user)):
+def moi(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    # Appelée à l'ouverture de l'application : on en profite pour créer les mouvements récurrents dus.
+    try:
+        generer_mouvements_recurrents(db, user)
+    except Exception:  # un souci ici ne doit pas empêcher d'ouvrir l'application
+        db.rollback()
+        log.exception("Erreur pendant la création des mouvements récurrents")
     return {"id": user.id, "nom": user.nom, "email": user.email, "role": user.role, "recevoir_bilan": user.recevoir_bilan,
             "recevoir_alertes": user.recevoir_alertes, "smtp_configure": smtp_configure()}
 
@@ -418,6 +441,178 @@ def definir_budget(data: BudgetIn, db: Session = Depends(get_db), user: User = D
 
 
 # ---------------------------------------------------------------------------
+# Mouvements récurrents (salaire, loyer, abonnements… créés automatiquement chaque mois)
+# ---------------------------------------------------------------------------
+def categorie_epargne(db: Session) -> Categorie:
+    return db.query(Categorie).filter(Categorie.nom == "Épargne").one()
+
+
+def get_objectif(db: Session, user: User, objectif_id: int) -> ObjectifEpargne:
+    o = db.get(ObjectifEpargne, objectif_id)
+    if not o or o.user_id != user.id or o.archive:
+        raise HTTPException(404, "Objectif introuvable")
+    return o
+
+
+def get_recurrent(db: Session, user: User, recurrent_id: int) -> MouvementRecurrent:
+    r = db.get(MouvementRecurrent, recurrent_id)
+    if not r or r.user_id != user.id:
+        raise HTTPException(404, "Mouvement récurrent introuvable")
+    return r
+
+
+def recurrent_out(r: MouvementRecurrent) -> dict:
+    prochaine = prochaine_date(r, aujourd_hui())
+    return {"id": r.id, "type": r.type, "montant": r.montant, "libelle": r.libelle, "jour": r.jour,
+            "debut": r.debut.isoformat(), "actif": r.actif, "categorie_id": r.categorie_id,
+            "categorie_nom": r.categorie.nom if r.categorie else None, "objectif_id": r.objectif_id,
+            "objectif_nom": r.objectif.nom if r.objectif else None,
+            "prochaine_date": prochaine.isoformat() if prochaine else None}
+
+
+def recurrent_vers_dict(r: MouvementRecurrent) -> dict:
+    return {k: v for k, v in recurrent_out(r).items() if k not in ("id", "prochaine_date", "categorie_id", "objectif_id")}
+
+
+def remplir_recurrent(db: Session, user: User, r: MouvementRecurrent, data: RecurrentIn):
+    debut = data.debut or aujourd_hui()
+    if debut < aujourd_hui() - timedelta(days=366):
+        raise HTTPException(400, "La date de début ne peut pas remonter à plus de 12 mois")
+    r.type, r.montant, r.libelle, r.jour, r.debut, r.actif = (data.type, data.montant, data.libelle.strip(),
+                                                              data.jour, debut, data.actif)
+    r.objectif_id = None
+    if data.objectif_id:  # versement automatique : toujours une dépense « Épargne »
+        r.objectif_id = get_objectif(db, user, data.objectif_id).id
+        r.type, r.categorie_id = "depense", categorie_epargne(db).id
+    elif data.type == "revenu":
+        r.categorie_id = None
+    elif data.categorie_id:
+        if not db.get(Categorie, data.categorie_id):
+            raise HTTPException(400, "Catégorie inconnue")
+        r.categorie_id = data.categorie_id
+    else:
+        r.categorie_id = categorie_auto(db, user, r.libelle).id
+
+
+@app.get("/api/recurrents")
+def liste_recurrents(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    rs = (db.query(MouvementRecurrent).filter(MouvementRecurrent.user_id == user.id)
+          .order_by(MouvementRecurrent.actif.desc(), MouvementRecurrent.jour, MouvementRecurrent.id).all())
+    return [recurrent_out(r) for r in rs]
+
+
+@app.post("/api/recurrents", status_code=201)
+def creer_recurrent(data: RecurrentIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    r = MouvementRecurrent(user_id=user.id)
+    remplir_recurrent(db, user, r, data)
+    db.add(r)
+    db.flush()
+    db.refresh(r)
+    journaliser(db, user, "creation", "recurrent", r.id, apres=recurrent_vers_dict(r))
+    db.commit()
+    crees = generer_mouvements_recurrents(db, user)  # les mois déjà dus sont créés tout de suite
+    db.refresh(r)
+    return {**recurrent_out(r), "mouvements_crees": len(crees)}
+
+
+@app.put("/api/recurrents/{recurrent_id}")
+def modifier_recurrent(recurrent_id: int, data: RecurrentIn, db: Session = Depends(get_db),
+                       user: User = Depends(get_current_user)):
+    r = get_recurrent(db, user, recurrent_id)
+    avant = recurrent_vers_dict(r)
+    remplir_recurrent(db, user, r, data)
+    db.flush()
+    db.refresh(r)
+    journaliser(db, user, "modification", "recurrent", r.id, avant=avant, apres=recurrent_vers_dict(r))
+    db.commit()
+    crees = generer_mouvements_recurrents(db, user)
+    db.refresh(r)
+    return {**recurrent_out(r), "mouvements_crees": len(crees)}
+
+
+@app.delete("/api/recurrents/{recurrent_id}")
+def arreter_recurrent(recurrent_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Arrête les créations futures. Les mouvements déjà créés sont conservés."""
+    r = get_recurrent(db, user, recurrent_id)
+    if r.actif:
+        avant = recurrent_vers_dict(r)
+        r.actif = False
+        journaliser(db, user, "arret", "recurrent", r.id, avant=avant, apres=recurrent_vers_dict(r))
+        db.commit()
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Objectifs d'épargne
+# ---------------------------------------------------------------------------
+def objectif_vers_dict(o: ObjectifEpargne) -> dict:
+    return {"nom": o.nom, "montant_cible": o.montant_cible,
+            "date_limite": o.date_limite.isoformat() if o.date_limite else None, "archive": o.archive}
+
+
+def objectif_out(db: Session, user: User, objectif_id: int) -> dict:
+    return next(o for o in objectifs_de(db, user, aujourd_hui()) if o["id"] == objectif_id)
+
+
+@app.get("/api/objectifs")
+def liste_objectifs(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return objectifs_de(db, user, aujourd_hui())
+
+
+@app.post("/api/objectifs", status_code=201)
+def creer_objectif(data: ObjectifIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    o = ObjectifEpargne(user_id=user.id, nom=data.nom.strip(), montant_cible=data.montant_cible,
+                        date_limite=data.date_limite)
+    db.add(o)
+    db.flush()
+    journaliser(db, user, "creation", "objectif", o.id, apres=objectif_vers_dict(o))
+    db.commit()
+    return decrire(o, 0, aujourd_hui())
+
+
+@app.put("/api/objectifs/{objectif_id}")
+def modifier_objectif(objectif_id: int, data: ObjectifIn, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    o = get_objectif(db, user, objectif_id)
+    avant = objectif_vers_dict(o)
+    o.nom, o.montant_cible, o.date_limite = data.nom.strip(), data.montant_cible, data.date_limite
+    journaliser(db, user, "modification", "objectif", o.id, avant=avant, apres=objectif_vers_dict(o))
+    db.commit()
+    return objectif_out(db, user, o.id)
+
+
+@app.delete("/api/objectifs/{objectif_id}")
+def archiver_objectif(objectif_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """L'objectif est archivé (les versements restent dans l'épargne) et ses versements récurrents s'arrêtent."""
+    o = get_objectif(db, user, objectif_id)
+    avant = objectif_vers_dict(o)
+    o.archive = True
+    journaliser(db, user, "archivage", "objectif", o.id, avant=avant, apres=objectif_vers_dict(o))
+    for r in db.query(MouvementRecurrent).filter_by(user_id=user.id, objectif_id=o.id, actif=True):
+        avant_r = recurrent_vers_dict(r)
+        r.actif = False
+        journaliser(db, user, "arret", "recurrent", r.id, avant=avant_r, apres=recurrent_vers_dict(r))
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/objectifs/{objectif_id}/versements", status_code=201)
+def verser(objectif_id: int, data: VersementIn, taches: BackgroundTasks, db: Session = Depends(get_db),
+           user: User = Depends(get_current_user)):
+    """Met de l'argent de côté pour un objectif : crée une dépense « Épargne » liée à l'objectif."""
+    o = get_objectif(db, user, objectif_id)
+    m = Mouvement(user_id=user.id, type="depense", montant=data.montant, libelle=f"Épargne : {o.nom}",
+                  date=data.date or aujourd_hui(), categorie_id=categorie_epargne(db).id, objectif_id=o.id)
+    db.add(m)
+    db.flush()
+    db.refresh(m)
+    journaliser(db, user, "creation", "mouvement", m.id, apres={**vers_dict(m), "objectif": o.nom})
+    db.commit()
+    planifier_alerte(taches, user, m)
+    return objectif_out(db, user, o.id)
+
+
+# ---------------------------------------------------------------------------
 # Tableau de bord et recommandations
 # ---------------------------------------------------------------------------
 @app.get("/api/dashboard")
@@ -493,7 +688,8 @@ def tache_bilans_http(authorization: Optional[str] = Header(None), db: Session =
     secret = os.environ.get("CRON_SECRET")
     if secret and authorization != f"Bearer {secret}":
         raise HTTPException(401, "Non autorisé")
-    return {"bilans_envoyes": envoyer_bilans_du_mois(db)}
+    return {"mouvements_recurrents": len(generer_mouvements_recurrents(db)),
+            "bilans_envoyes": envoyer_bilans_du_mois(db)}
 
 
 # ---------------------------------------------------------------------------

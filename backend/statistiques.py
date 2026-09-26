@@ -10,7 +10,9 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from models import Budget, Categorie, Mouvement, User
+from objectifs import objectifs_de
 from recommandations import StatsMois
+from temps import aujourd_hui
 
 
 def bornes_mois(annee: int, mois: int):
@@ -121,4 +123,5 @@ def calculer_stats(db: Session, user: User, annee: int, mois: int, lignes: list 
         moyenne_3_mois={cat: v / 3 for cat, v in cumul.items()},
         epargne_totale=int(epargne_totale or 0),
         besoins_moyens=besoins / 3,
+        objectifs=objectifs_de(db, user, aujourd_hui()),
     )

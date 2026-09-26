@@ -48,8 +48,55 @@ class Mouvement(Base):
     categorie_auto = Column(Boolean, default=False)  # True si classée automatiquement
     archive = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    recurrent_id = Column(Integer, ForeignKey("recurrents.id"), nullable=True)  # créé automatiquement
+    objectif_id = Column(Integer, ForeignKey("objectifs.id"), nullable=True)    # versement vers un objectif
 
     categorie = relationship("Categorie")
+
+
+class MouvementRecurrent(Base):
+    """Modèle d'un mouvement qui revient chaque mois (salaire, loyer, abonnement…).
+    Le mouvement est créé automatiquement le `jour` du mois (le dernier jour si le mois est plus court)."""
+    __tablename__ = "recurrents"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    type = Column(String, nullable=False)  # revenu / depense
+    montant = Column(Integer, nullable=False)
+    libelle = Column(String, nullable=False)
+    categorie_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
+    objectif_id = Column(Integer, ForeignKey("objectifs.id"), nullable=True)  # épargne automatique
+    jour = Column(Integer, nullable=False)  # 1 à 31
+    debut = Column(Date, nullable=False)    # aucune création avant cette date
+    actif = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    categorie = relationship("Categorie")
+    objectif = relationship("ObjectifEpargne")
+
+
+class GenerationRecurrente(Base):
+    """Mémorise chaque mois déjà créé pour un mouvement récurrent : grâce à la contrainte d'unicité,
+    il n'est jamais créé deux fois, même si deux requêtes arrivent en même temps
+    (et un mouvement archivé n'est pas recréé)."""
+    __tablename__ = "generations_recurrentes"
+    __table_args__ = (UniqueConstraint("recurrent_id", "periode"),)
+    id = Column(Integer, primary_key=True, index=True)
+    recurrent_id = Column(Integer, ForeignKey("recurrents.id"), nullable=False, index=True)
+    periode = Column(String, nullable=False)  # "2026-09"
+    mouvement_id = Column(Integer, ForeignKey("mouvements.id"), nullable=False)
+
+
+class ObjectifEpargne(Base):
+    """Objectif d'épargne (ex. 500 000 FCFA pour un ordinateur d'ici juin).
+    La progression est la somme des versements : les mouvements « Épargne » liés à l'objectif."""
+    __tablename__ = "objectifs"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    nom = Column(String, nullable=False)
+    montant_cible = Column(Integer, nullable=False)
+    date_limite = Column(Date, nullable=True)
+    archive = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class RegleCategorie(Base):

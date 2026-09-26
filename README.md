@@ -6,6 +6,8 @@ Application web de gestion financière personnelle (montants en FCFA, plusieurs 
 - **Catégorisation automatique** par mots-clés (Orange, CIE, Yango, marché, loyer…). Si une dépense est mal classée, on la corrige dans la liste : l'app **apprend** le mot-clé pour les prochaines dépenses.
 - **Recommandations** basées sur des règles : 50/30/20, budget dépassé ou presque atteint, hausse inhabituelle d'une catégorie, fonds d'urgence, dépenses supérieures aux revenus.
 - **Budgets mensuels** par catégorie.
+- **Mouvements récurrents** : salaire, loyer, abonnements… saisis une fois, puis créés **automatiquement** chaque mois le jour choisi (le dernier jour du mois si ce jour n'existe pas). La création a lieu à l'ouverture de l'app et chaque jour avec la tâche planifiée. Un mois manqué est rattrapé, et rien n'est jamais créé deux fois.
+- **Objectifs d'épargne** (ex. « 500 000 FCFA pour un ordinateur d'ici juin ») : barre de progression, montant à mettre de côté chaque mois et conseil sur le tableau de bord. Un mouvement récurrent lié à l'objectif fait les versements automatiquement.
 - **Traçabilité** : rien n'est supprimé (on archive), et chaque création, modification ou archivage est inscrit dans un journal (valeur avant / après). Export CSV compatible Excel.
 - **Emails automatiques** :
   - **bilan mensuel** le 1er du mois à 8 h (revenus, dépenses, principales catégories, recommandations) ;
@@ -26,6 +28,10 @@ backend/
   auth.py              mots de passe + jetons JWT
   categorisation.py    mots-clés et catégorisation automatique  <- à enrichir !
   recommandations.py   règles de bonne gestion                   <- à enrichir !
+  recurrents.py        création automatique des mouvements récurrents
+  objectifs.py         progression des objectifs d'épargne
+  tracabilite.py       journal de traçabilité
+  temps.py             date du jour (fuseau Africa/Abidjan par défaut)
   statistiques.py      calculs (totaux du mois, moyennes…)
   notifications.py     contenu du bilan mensuel et des alertes de budget
   emails.py            envoi SMTP (ou simulation en local)
@@ -85,7 +91,7 @@ Vercel (offre *Hobby*, gratuite) fait tourner l'application : l'API et l'interfa
 À savoir :
 - **Clé secrète** : elle est générée au premier démarrage et gardée en base (on peut aussi fournir `SECRET_KEY`).
 - **Région** : `vercel.json` place le serveur à Francfort (`fra1`), à côté de la base Neon (`eu-central-1`). Chaque requête vers la base prend ainsi quelques millisecondes au lieu d'environ 90 ms depuis les États-Unis. Si ta base est ailleurs, `/api/diagnostic` affiche `region_base` et `region_serveur` pour vérifier.
-- **Tâche quotidienne** : Vercel Cron appelle `/api/taches/bilans` chaque jour à 8 h UTC pour les bilans mensuels (voir `vercel.json`). Définir `CRON_SECRET` protège cet appel.
+- **Tâche quotidienne** : Vercel Cron appelle `/api/taches/bilans` chaque jour à 8 h UTC pour créer les mouvements récurrents dus et envoyer les bilans mensuels (voir `vercel.json`). Définir `CRON_SECRET` protège cet appel.
 - **Mises à jour** : chaque push sur `main` redéploie automatiquement.
 - **Passage au VPS plus tard** : il suffit de mettre la même `DATABASE_URL` dans le `.env` du VPS. Les données restent dans Neon, il n'y a rien à transférer.
 
@@ -168,7 +174,7 @@ Pousse sur `main`, ou relance le dernier workflow dans l'onglet *Actions*. Véri
 - [x] Tableau de bord, budgets, recommandations par règles
 - [x] Bilan mensuel envoyé par email le 1er du mois + alertes de budget
 - [ ] Export PDF / Excel du bilan
-- [ ] Revenus et dépenses récurrents (salaire, loyer) saisis automatiquement chaque mois
-- [ ] Objectifs d'épargne (ex. « 500 000 FCFA pour un ordinateur d'ici juin »)
+- [x] Revenus et dépenses récurrents (salaire, loyer) saisis automatiquement chaque mois
+- [x] Objectifs d'épargne (ex. « 500 000 FCFA pour un ordinateur d'ici juin »)
 - [ ] Conseils personnalisés rédigés par une IA (Claude), en plus des règles
 - [ ] Import de relevés (Wave, Orange Money, banque) en CSV
