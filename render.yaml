@@ -1,0 +1,18 @@
+# Déploiement gratuit sur Render (render.com) : « New » > « Blueprint » > choisir ce dépôt.
+# Render construit le Dockerfile, génère SECRET_KEY tout seul et demande DATABASE_URL
+# (adresse de la base Supabase). Chaque push sur main redéploie automatiquement.
+services:
+  - type: web
+    name: finances-perso
+    runtime: docker
+    plan: free
+    region: frankfurt
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false          # à coller dans Render : la « Connection string » Supabase
+      - key: DB_SCHEMA
+        value: finances      # tables rangées à part dans la base Supabase
