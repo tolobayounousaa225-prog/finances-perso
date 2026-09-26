@@ -42,9 +42,12 @@ def envoyer_email(destinataire: str, sujet: str, texte: str, html: str = "") -> 
         port = int(os.environ.get("SMTP_PORT", "587"))
         if port == 465:  # SSL direct
             serveur = smtplib.SMTP_SSL(os.environ["SMTP_HOST"], port, timeout=20)
-        else:            # 587 : connexion puis chiffrement STARTTLS
+        else:            # 587 : connexion puis chiffrement STARTTLS (si le serveur le propose)
             serveur = smtplib.SMTP(os.environ["SMTP_HOST"], port, timeout=20)
-            serveur.starttls()
+            serveur.ehlo()
+            if serveur.has_extn("starttls"):
+                serveur.starttls()
+                serveur.ehlo()
         with serveur:
             if os.environ.get("SMTP_USER"):
                 serveur.login(os.environ["SMTP_USER"], os.environ.get("SMTP_PASSWORD", ""))

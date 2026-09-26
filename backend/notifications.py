@@ -24,7 +24,18 @@ from statistiques import bornes_mois, calculer_stats, depenses_par_categorie, mo
 log = logging.getLogger("finances.notifications")
 
 FUSEAU = ZoneInfo(os.environ.get("FUSEAU_HORAIRE", "Africa/Abidjan"))
-APP_URL = os.environ.get("APP_URL", "http://localhost:8000")
+# Adresse de l'app dans les emails : APP_URL si elle est définie, sinon l'adresse de production
+# Vercel (variable fournie automatiquement par Vercel), sinon le serveur local.
+_VERCEL = os.environ.get("VERCEL_PROJECT_PRODUCTION_URL")
+APP_URL = (os.environ.get("APP_URL") or (f"https://{_VERCEL}" if _VERCEL else "http://localhost:8000")).rstrip("/")
+
+
+def entete_email() -> str:
+    """Bandeau avec le logo (PNG : les messageries n'affichent pas les images SVG)."""
+    return (f'<div style="display:flex;align-items:center;gap:10px;margin:0 0 16px">'
+            f'<img src="{escape(APP_URL)}/logo-192.png" width="40" height="40" alt="" '
+            f'style="border-radius:9px;vertical-align:middle">'
+            f'<b style="font-size:18px;color:#0f6e5a;vertical-align:middle">&nbsp;Finances Perso</b></div>')
 MOIS_FR = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet",
            "août", "septembre", "octobre", "novembre", "décembre"]
 SEUILS_ALERTE = (100, 80)  # du plus grave au moins grave
@@ -92,7 +103,8 @@ def contenu_bilan(db: Session, user: User, annee: int, mois: int):
     )
     couleur_solde = COULEURS["bravo"] if solde >= 0 else COULEURS["alerte"]
     html = f"""<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;color:#1d2433">
-  <h2 style="color:#0f6e5a">💰 Bilan de {nom_mois}</h2>
+  {entete_email()}
+  <h2 style="color:#0f6e5a">Bilan de {nom_mois}</h2>
   <p>Bonjour {escape(user.nom)}, voici le résumé de ton mois.</p>
   <table style="width:100%;border-collapse:collapse;margin:12px 0">
     <tr><td>Revenus</td><td style="text-align:right;color:{COULEURS['bravo']}"><b>{fcfa(s.revenus)}</b></td></tr>
@@ -148,6 +160,34 @@ def envoyer_bilans_du_mois(db: Session, jour: Optional[date] = None) -> int:
 # ---------------------------------------------------------------------------
 # Alertes de budget
 # ---------------------------------------------------------------------------
+def envoyer_bienvenue(user: User) -> bool:
+    """Email envoyé juste après l'inscription."""
+    sujet = "Bienvenue sur Finances Perso 👋"
+    texte = "\n".join([
+        f"Bonjour {user.nom},", "",
+        "Ton compte Finances Perso est prêt. Pour bien démarrer :",
+        "  1. Saisis tes revenus du mois (salaire, primes…).",
+        "  2. Ajoute tes dépenses : elles sont classées automatiquement.",
+        "  3. Fixe des budgets par catégorie : tu seras alerté à 80 % et à 100 %.", "",
+        "Chaque 1er du mois, tu recevras ton bilan avec des conseils personnalisés.", "",
+        f"Ouvrir l'application : {APP_URL}",
+    ])
+    html = f"""<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;color:#1d2433">
+  {entete_email()}
+  <h2 style="color:#0f6e5a">Bienvenue, {escape(user.nom)} !</h2>
+  <p>Ton compte est prêt. Pour bien démarrer :</p>
+  <ol>
+    <li>Saisis tes <b>revenus</b> du mois (salaire, primes…).</li>
+    <li>Ajoute tes <b>dépenses</b> : elles sont classées automatiquement.</li>
+    <li>Fixe des <b>budgets</b> par catégorie : tu seras alerté à 80 % et à 100 %.</li>
+  </ol>
+  <p>Chaque 1<sup>er</sup> du mois, tu recevras ton bilan avec des conseils personnalisés.</p>
+  <p><a href="{escape(APP_URL)}" style="background:#0f6e5a;color:#fff;padding:10px 16px;border-radius:8px;
+     text-decoration:none;display:inline-block">Ouvrir Finances Perso</a></p>
+</div>"""
+    return envoyer_email(user.email, sujet, texte, html)
+
+
 def verifier_alerte_budget(db: Session, user: User, categorie_id: int, jour: date) -> Optional[int]:
     """Appelée après chaque dépense. Envoie une alerte si le budget de la catégorie
     vient de franchir 80 % ou 100 % ce mois-ci. Renvoie le seuil alerté (ou None)."""
@@ -184,7 +224,7 @@ def verifier_alerte_budget(db: Session, user: User, categorie_id: int, jour: dat
                  f"Il te reste {fcfa(budget.montant_mensuel - depense)} jusqu'à la fin du mois.")
     texte = f"Bonjour {user.nom},\n\n{corps}\n\nDétails : {APP_URL}"
     html = (f'<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;color:#1d2433">'
-            f'<h2 style="color:{COULEURS["alerte"] if seuil == 100 else COULEURS["conseil"]}">{escape(sujet)}</h2>'
+            f'{entete_email()}<h2 style="color:{COULEURS["alerte"] if seuil == 100 else COULEURS["conseil"]}">{escape(sujet)}</h2>'
             f'<p>Bonjour {escape(user.nom)},</p><p>{escape(corps)}</p>'
             f'<p><a href="{escape(APP_URL)}">Ouvrir Finances Perso</a></p></div>')
     if not envoyer_email(user.email, sujet, texte, html):
