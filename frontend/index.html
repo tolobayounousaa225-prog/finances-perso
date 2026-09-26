@@ -57,6 +57,11 @@
   .interrupteur input { margin-top: 3px; width: 18px; height: 18px; }
   .info { background: var(--bg); border-radius: 8px; padding: 10px 12px; font-size: 14px; margin-bottom: 12px; }
   iframe.apercu { width: 100%; height: 620px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+  tr.cliquable { cursor: pointer; }
+  tr.cliquable:hover td { background: var(--bg); }
+  .badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--bg);
+           border: 1px solid var(--border); color: var(--muted); }
+  .badge.admin { color: var(--primary); border-color: var(--primary); }
   pre { white-space: pre-wrap; margin: 0; font-size: 12px; color: var(--muted); }
 </style>
 </head>
@@ -87,6 +92,7 @@
       <button data-onglet="budgets">Budgets</button>
       <button data-onglet="journal">Journal</button>
       <button data-onglet="parametres">Paramètres</button>
+      <button data-onglet="admin" id="bouton-admin" class="hidden">🛡️ Administration</button>
     </nav>
     <input type="month" id="mois-choisi" aria-label="Mois">
     <button class="btn secondary" id="deconnexion">Déconnexion</button>
@@ -183,6 +189,37 @@
         <iframe class="apercu" id="apercu-bilan" title="Aperçu du bilan" sandbox></iframe>
       </div>
     </section>
+    <!-- Administration (super admin uniquement, lecture seule) -->
+    <section id="onglet-admin" class="hidden">
+      <div class="card" id="admin-liste">
+        <h2>🛡️ Tous les comptes</h2>
+        <p class="muted">Vue en lecture seule. Chiffres du mois choisi en haut de la page. Clique sur un compte pour
+          voir le détail (chaque consultation est inscrite dans ton journal).</p>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Nom</th><th>Email</th><th>Inscrit le</th><th class="montant">Mouvements</th>
+              <th class="montant">Revenus du mois</th><th class="montant">Dépenses du mois</th><th>Dernière activité</th></tr></thead>
+            <tbody id="admin-utilisateurs"></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="admin-detail" class="hidden">
+        <p><button class="btn secondary" id="admin-retour">← Retour à la liste</button></p>
+        <div class="card"><h2 id="admin-titre"></h2>
+          <div class="kpis" id="admin-kpis"></div>
+        </div>
+        <div class="card"><h2>Mouvements du mois</h2>
+          <div class="table-scroll"><table>
+            <thead><tr><th>Date</th><th>Libellé</th><th>Catégorie</th><th class="montant">Montant</th></tr></thead>
+            <tbody id="admin-mouvements"></tbody></table></div>
+        </div>
+        <div class="card"><h2>Journal (50 dernières actions)</h2>
+          <div class="table-scroll"><table>
+            <thead><tr><th>Date</th><th>Action</th><th>Élément</th><th>Après</th></tr></thead>
+            <tbody id="admin-journal"></tbody></table></div>
+        </div>
+      </div>
+    </section>
   </main>
 </div>
 
@@ -246,6 +283,8 @@ $("form-auth").onsubmit = async (e) => {
 
 function deconnecter() {
   token = null;
+  adminCompteOuvert = null;
+  $("bouton-admin").classList.add("hidden");
   try { localStorage.removeItem("token"); } catch {}
   $("ecran-app").classList.add("hidden");
   $("ecran-auth").classList.remove("hidden");
@@ -265,7 +304,7 @@ $("mois-choisi").onchange = rafraichir;
 
 function rafraichir() {
   const chargeurs = { dashboard: chargerDashboard, mouvements: chargerMouvements, budgets: chargerBudgets,
-                      journal: chargerJournal, parametres: chargerParametres };
+                      journal: chargerJournal, parametres: chargerParametres, admin: chargerAdmin };
   chargeurs[ongletActif]().catch((err) => alert(err.message));
 }
 
@@ -443,10 +482,62 @@ $("envoyer-bilan").onclick = async () => {
   } catch (err) { $("envoi-statut").textContent = err.message; }
 };
 
+// ---------------------------------------------------------------- Administration (super admin)
+const dateFr = (iso) => iso ? new Date(iso + "Z").toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" }) : "–";
+let adminCompteOuvert = null;
+
+async function chargerAdmin() {
+  if (adminCompteOuvert) return ouvrirCompte(adminCompteOuvert);
+  const { annee, mois } = moisChoisi();
+  const comptes = await api(`/api/admin/utilisateurs?annee=${annee}&mois=${mois}`);
+  $("admin-detail").classList.add("hidden");
+  $("admin-liste").classList.remove("hidden");
+  $("admin-utilisateurs").innerHTML = comptes.map((u) => `
+    <tr class="cliquable" data-compte="${u.id}">
+      <td>${esc(u.nom)} ${u.role === "superadmin" ? '<span class="badge admin">super admin</span>' : ""}</td>
+      <td>${esc(u.email)}</td><td>${dateFr(u.inscrit_le)}</td>
+      <td class="montant">${u.nb_mouvements}</td>
+      <td class="montant revenu">${fcfa(u.revenus_mois)}</td>
+      <td class="montant depense">${fcfa(u.depenses_mois)}</td>
+      <td>${dateFr(u.derniere_activite)}</td>
+    </tr>`).join("") || '<tr><td colspan="7" class="muted">Aucun compte.</td></tr>';
+}
+
+async function ouvrirCompte(id) {
+  adminCompteOuvert = id;
+  const { annee, mois } = moisChoisi();
+  const d = await api(`/api/admin/utilisateurs/${id}?annee=${annee}&mois=${mois}`);
+  const t = d.tableau_de_bord;
+  $("admin-liste").classList.add("hidden");
+  $("admin-detail").classList.remove("hidden");
+  $("admin-titre").textContent = `${d.utilisateur.nom} — ${d.utilisateur.email}`;
+  $("admin-kpis").innerHTML = `
+    <div class="kpi"><small>Revenus du mois</small><b class="revenu">${fcfa(t.revenus)}</b></div>
+    <div class="kpi"><small>Dépenses du mois</small><b class="depense">${fcfa(t.depenses)}</b></div>
+    <div class="kpi"><small>Solde</small><b class="${t.solde >= 0 ? "revenu" : "depense"}">${fcfa(t.solde)}</b></div>`;
+  $("admin-mouvements").innerHTML = d.mouvements.map((m) => `
+    <tr><td>${m.date.split("-").reverse().join("/")}</td><td>${esc(m.libelle)}</td>
+      <td>${m.type === "revenu" ? '<span class="muted">Revenu</span>' : esc(m.categorie_nom || "")}</td>
+      <td class="montant ${m.type}">${m.type === "revenu" ? "+" : "−"} ${fcfa(m.montant)}</td></tr>`).join("")
+    || '<tr><td colspan="4" class="muted">Aucun mouvement ce mois-ci.</td></tr>';
+  $("admin-journal").innerHTML = d.journal.map((j) => `
+    <tr><td>${dateFr(j.date)}</td><td>${esc(j.action)}</td><td>${esc(j.entite)} #${j.entite_id}</td>
+      <td><pre>${resume(j.apres)}</pre></td></tr>`).join("")
+    || '<tr><td colspan="4" class="muted">Aucune action.</td></tr>';
+}
+
+$("admin-utilisateurs").onclick = (e) => {
+  const ligne = e.target.closest("tr[data-compte]");
+  if (ligne) ouvrirCompte(Number(ligne.dataset.compte)).catch((err) => alert(err.message));
+};
+$("admin-retour").onclick = () => { adminCompteOuvert = null; chargerAdmin().catch((err) => alert(err.message)); };
+
 // ---------------------------------------------------------------- Démarrage
 async function demarrer() {
   if (!token) { deconnecter(); return; }
-  try { categories = await api("/api/categories"); } catch { return; }
+  let moi;
+  try { [categories, moi] = await Promise.all([api("/api/categories"), api("/api/me")]); } catch { return; }
+  $("bouton-admin").classList.toggle("hidden", moi.role !== "superadmin");
   $("mvt-categorie").innerHTML = '<option value="">Catégorie automatique</option>' + optionsCategories();
   $("ecran-auth").classList.add("hidden");
   $("ecran-app").classList.remove("hidden");

@@ -283,3 +283,62 @@ def test_erreur_inattendue_renvoie_son_type(client, monkeypatch):
     c = TestClient(main.app, raise_server_exceptions=False)
     r = c.post("/api/auth/register", json={"nom": "A", "email": "x@t.ci", "mot_de_passe": "motdepasse1"})
     assert r.status_code == 500 and r.json()["detail"] == "Erreur interne du serveur (RuntimeError)"
+
+
+# ---------------------------------------------------------------------------
+# Super admin
+# ---------------------------------------------------------------------------
+def test_premier_compte_super_admin(client):
+    h_admin = inscrire(client, "admin@test.ci")
+    h_awa = inscrire(client, "awa2@test.ci")
+    assert client.get("/api/me", headers=h_admin).json()["role"] == "superadmin"
+    assert client.get("/api/me", headers=h_awa).json()["role"] == "utilisateur"
+    assert client.get("/api/admin/utilisateurs?annee=2026&mois=9", headers=h_awa).status_code == 403
+
+
+def test_super_admin_observe_les_comptes(client):
+    h_admin = inscrire(client, "admin@test.ci")
+    h_awa = inscrire(client, "awa2@test.ci")
+    ajouter(client, h_awa, "revenu", 200000, "Salaire")
+    ajouter(client, h_awa, "depense", 5000, "Recharge Orange")
+
+    liste = client.get("/api/admin/utilisateurs?annee=2026&mois=9", headers=h_admin).json()
+    awa = next(u for u in liste if u["email"] == "awa2@test.ci")
+    assert awa["nb_mouvements"] == 2 and awa["revenus_mois"] == 200000 and awa["depenses_mois"] == 5000
+
+    detail = client.get(f"/api/admin/utilisateurs/{awa['id']}?annee=2026&mois=9", headers=h_admin).json()
+    assert detail["tableau_de_bord"]["solde"] == 195000
+    assert [m["libelle"] for m in detail["mouvements"]] == ["Recharge Orange", "Salaire"]
+    assert len(detail["journal"]) == 2
+    # la consultation est tracée dans le journal du super admin, pas dans celui d'Awa
+    assert client.get("/api/journal", headers=h_admin).json()[0]["action"] == "consultation"
+    assert len(client.get("/api/journal", headers=h_awa).json()) == 2
+    # lecture seule : le super admin ne peut pas toucher aux mouvements d'Awa
+    mid = client.get("/api/mouvements", headers=h_awa).json()[0]["id"]
+    assert client.delete(f"/api/mouvements/{mid}", headers=h_admin).status_code == 404
+
+
+def test_super_admin_par_email(client, monkeypatch):
+    inscrire(client, "premier@test.ci")
+    monkeypatch.setenv("SUPERADMIN_EMAIL", "Chef@Test.ci")
+    h_chef = inscrire(client, "chef@test.ci")
+    assert client.get("/api/me", headers=h_chef).json()["role"] == "superadmin"
+
+
+def test_migration_ajoute_la_colonne_role(tmp_path, monkeypatch):
+    import sqlite3
+    chemin = tmp_path / "ancienne.db"
+    con = sqlite3.connect(chemin)  # base créée par l'ancienne version, sans colonne role
+    con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, nom VARCHAR NOT NULL, email VARCHAR NOT NULL UNIQUE,"
+                " mot_de_passe_hash VARCHAR NOT NULL, recevoir_bilan BOOLEAN NOT NULL,"
+                " recevoir_alertes BOOLEAN NOT NULL, created_at DATETIME)")
+    con.execute("INSERT INTO users VALUES (1, 'Ancien', 'ancien@test.ci', 'x', 1, 1, NULL)")
+    con.commit(); con.close()
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{chemin}")
+    monkeypatch.setenv("ACTIVER_TACHES", "false")
+    for mod in ["main", "database", "models", "auth", "statistiques", "notifications", "taches", "emails"]:
+        sys.modules.pop(mod, None)
+    import main
+    main.initialiser_base()
+    con = sqlite3.connect(chemin)
+    assert con.execute("SELECT role FROM users WHERE id = 1").fetchone()[0] == "superadmin"

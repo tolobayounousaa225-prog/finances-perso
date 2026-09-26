@@ -9,7 +9,7 @@ un schéma séparé. Permet de partager une base Supabase existante sans mélang
 import os
 import re
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -41,6 +41,27 @@ def preparer_schema():
     if DB_SCHEMA and not EST_SQLITE:
         with engine.begin() as conn:
             conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{DB_SCHEMA}"'))
+
+
+def ajouter_colonnes_manquantes():
+    """Mini-migration : create_all() crée les nouvelles tables mais n'ajoute pas les nouvelles
+    colonnes aux tables existantes. On ajoute ici celles qui manquent (avec leur valeur par défaut)."""
+    inspecteur = inspect(engine)
+    tables_existantes = set(inspecteur.get_table_names())
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in tables_existantes:
+                continue
+            presentes = {c["name"] for c in inspecteur.get_columns(table.name)}
+            for colonne in table.columns:
+                if colonne.name in presentes:
+                    continue
+                type_sql = colonne.type.compile(dialect=engine.dialect)
+                defaut = colonne.server_default.arg if colonne.server_default is not None else None
+                sql = f'ALTER TABLE "{table.name}" ADD COLUMN "{colonne.name}" {type_sql}'
+                if defaut is not None:
+                    sql += f" NOT NULL DEFAULT '{defaut}'"
+                conn.execute(text(sql))
 
 
 def get_db():

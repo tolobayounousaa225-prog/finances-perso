@@ -20,6 +20,8 @@ class User(Base):
     mot_de_passe_hash = Column(String, nullable=False)
     recevoir_bilan = Column(Boolean, default=True, nullable=False)    # bilan mensuel par email
     recevoir_alertes = Column(Boolean, default=True, nullable=False)  # alertes de budget par email
+    # utilisateur (par défaut) ou superadmin (voit tous les comptes, en lecture seule)
+    role = Column(String, default="utilisateur", server_default="utilisateur", nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
