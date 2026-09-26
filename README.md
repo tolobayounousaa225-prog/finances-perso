@@ -18,6 +18,8 @@ Application web de gestion financière personnelle (montants en FCFA, plusieurs 
   On peut les activer ou les désactiver dans l'onglet Paramètres, avec un aperçu du bilan et un bouton « M'envoyer ce bilan maintenant ».
 - **Installable sur téléphone** : logo, icônes et manifeste web. Dans le navigateur du téléphone, utilise « Ajouter à l'écran d'accueil ».
 - Chaque compte ne voit que ses propres données.
+- **Double authentification** (facultative, onglet *Paramètres*) : code à 6 chiffres d'une application comme Google Authenticator, demandé à chaque connexion, avec 8 codes de secours à usage unique. Après 5 codes faux, la connexion est bloquée 10 minutes. Activations, désactivations et échecs sont inscrits dans le journal.
+- **Mode discret** : le bouton 👁️ en haut masque tous les montants (« •••• FCFA »). Le choix est mémorisé dans le navigateur.
 - **Super admin** : le premier compte créé (ou celui de `SUPERADMIN_EMAIL`) a un onglet *Administration*. Il y voit la liste de tous les comptes et le détail de chacun (tableau de bord, mouvements, journal), **en lecture seule**. Chaque consultation est inscrite dans son journal.
 
 ## Structure
@@ -34,6 +36,7 @@ backend/
   objectifs.py         progression des objectifs d'épargne
   tracabilite.py       journal de traçabilité
   temps.py             date du jour (fuseau Africa/Abidjan par défaut)
+  deux_facteurs.py     double authentification (codes TOTP, QR code, codes de secours)
   bilan_pdf.py         bilan mensuel en PDF (fpdf2)
   conseils_ia.py       conseils rédigés par l'IA (Claude, facultatif)
   statistiques.py      calculs (totaux du mois, moyennes…)
