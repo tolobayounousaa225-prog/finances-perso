@@ -78,12 +78,13 @@ Emails envoyés : **bienvenue** à l'inscription, **bilan mensuel** le 1er du mo
 Vercel (offre *Hobby*, gratuite) fait tourner l'application : l'API et l'interface sont servies à la même adresse. La base de données PostgreSQL gratuite est fournie par Neon, et elle s'ajoute depuis Vercel.
 
 1. Va sur [vercel.com](https://vercel.com) et inscris-toi avec **GitHub** (offre *Hobby*).
-2. Clique sur *Add New* → *Project*, **importe** `finances-perso`, puis *Deploy*. Aucun réglage n'est nécessaire : Vercel reconnaît FastAPI et utilise `api/index.py` comme point d'entrée (`vercel.json` ne déclare que la tâche quotidienne).
+2. Clique sur *Add New* → *Project*, **importe** `finances-perso`, puis *Deploy*. Aucun réglage n'est nécessaire : Vercel reconnaît FastAPI et utilise `api/index.py` comme point d'entrée (`vercel.json` déclare seulement la tâche quotidienne et la région).
 3. Dans le projet, ouvre l'onglet *Storage* → *Create Database* → **Neon**, puis *Create* et connecte la base au projet. Vercel ajoute tout seul la variable `DATABASE_URL`.
 4. Dans l'onglet *Deployments*, lance **Redeploy** sur le dernier déploiement. L'app est en ligne sur `https://finances-perso-xxxx.vercel.app`.
 
 À savoir :
 - **Clé secrète** : elle est générée au premier démarrage et gardée en base (on peut aussi fournir `SECRET_KEY`).
+- **Région** : `vercel.json` place le serveur à Francfort (`fra1`), à côté de la base Neon (`eu-central-1`). Chaque requête vers la base prend ainsi quelques millisecondes au lieu d'environ 90 ms depuis les États-Unis. Si ta base est ailleurs, `/api/diagnostic` affiche `region_base` et `region_serveur` pour vérifier.
 - **Tâche quotidienne** : Vercel Cron appelle `/api/taches/bilans` chaque jour à 8 h UTC pour les bilans mensuels (voir `vercel.json`). Définir `CRON_SECRET` protège cet appel.
 - **Mises à jour** : chaque push sur `main` redéploie automatiquement.
 - **Passage au VPS plus tard** : il suffit de mettre la même `DATABASE_URL` dans le `.env` du VPS. Les données restent dans Neon, il n'y a rien à transférer.
