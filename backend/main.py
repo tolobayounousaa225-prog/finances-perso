@@ -13,12 +13,12 @@ import platform
 import re
 import time
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import List, Literal, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -27,10 +27,12 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from auth import cle_secrete, creer_token, get_current_user, hacher, verifier
+from bilan_pdf import generer_bilan_pdf
 from categorisation import CATEGORIES_PAR_DEFAUT, categoriser, mot_cle_a_apprendre
+from conseils_ia import ErreurIA, generer_conseils, ia_configuree, resume_texte
 from database import DATABASE_URL, Base, SessionLocal, ajouter_colonnes_manquantes, engine, get_db, preparer_schema
 from emails import envoyer_email, smtp_configure
-from models import (Budget, Categorie, JournalAudit, Mouvement, MouvementRecurrent, ObjectifEpargne, Parametre,
+from models import (Budget, Categorie, ConseilIA, JournalAudit, Mouvement, MouvementRecurrent, ObjectifEpargne, Parametre,
                     RegleCategorie, User)
 from notifications import contenu_bilan, envoyer_bienvenue, envoyer_bilans_du_mois, verifier_alerte_budget
 from objectifs import decrire, objectifs_de
@@ -278,7 +280,8 @@ def moi(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
         db.rollback()
         log.exception("Erreur pendant la création des mouvements récurrents")
     return {"id": user.id, "nom": user.nom, "email": user.email, "role": user.role, "recevoir_bilan": user.recevoir_bilan,
-            "recevoir_alertes": user.recevoir_alertes, "smtp_configure": smtp_configure()}
+            "recevoir_alertes": user.recevoir_alertes, "smtp_configure": smtp_configure(),
+            "ia_configuree": ia_configuree()}
 
 
 @app.put("/api/me/preferences")
@@ -646,6 +649,63 @@ def envoyer_bilan_maintenant(annee: int, mois: int, user: User = Depends(get_cur
     if not envoyer_email(user.email, sujet, texte, html):
         raise HTTPException(502, "L'email n'a pas pu être envoyé, vérifie la configuration SMTP")
     return {"ok": True, "simule": not smtp_configure()}
+
+
+def conseils_ia_du_mois(db: Session, user: User, annee: int, mois: int) -> Optional[ConseilIA]:
+    return db.query(ConseilIA).filter_by(user_id=user.id, periode=f"{annee}-{mois:02d}").first()
+
+
+@app.get("/api/bilan/pdf")
+def bilan_pdf(annee: int, mois: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Le bilan du mois en PDF (chiffres, catégories, objectifs, recommandations, mouvements)."""
+    s = calculer_stats(db, user, annee, mois)
+    conseil = conseils_ia_du_mois(db, user, annee, mois)
+    contenu = generer_bilan_pdf(user.nom, annee, mois, s, generer_recommandations(s), mouvements_de(db, user, annee, mois),
+                                resume_texte(conseil.texte) if conseil else None)
+    return Response(contenu, media_type="application/pdf",
+                    headers={"Content-Disposition": f"attachment; filename=bilan-{annee}-{mois:02d}.pdf"})
+
+
+# ---------------------------------------------------------------------------
+# Conseils rédigés par l'IA (facultatif, voir conseils_ia.py)
+# ---------------------------------------------------------------------------
+def conseils_ia_out(c: Optional[ConseilIA]) -> dict:
+    return {"configuree": ia_configuree(), "conseils": resume_texte(c.texte) if c else [],
+            "date": c.date.isoformat(timespec="seconds") if c else None, "modele": c.modele if c else None}
+
+
+@app.get("/api/conseils-ia")
+def lire_conseils_ia(annee: int, mois: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return conseils_ia_out(conseils_ia_du_mois(db, user, annee, mois))
+
+
+@app.post("/api/conseils-ia")
+def demander_conseils_ia(annee: int, mois: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Demande de nouveaux conseils à l'IA. Chaque appel est payant : nombre limité par jour (IA_LIMITE_JOUR)."""
+    if not ia_configuree():
+        raise HTTPException(400, "Conseils IA non configurés sur le serveur (variable ANTHROPIC_API_KEY absente)")
+    limite = int(os.environ.get("IA_LIMITE_JOUR", "5"))
+    minuit = datetime.combine(datetime.utcnow().date(), datetime.min.time())
+    deja = (db.query(func.count(JournalAudit.id))
+            .filter(JournalAudit.user_id == user.id, JournalAudit.entite == "conseils_ia", JournalAudit.date >= minuit)
+            .scalar())
+    if deja >= limite:
+        raise HTTPException(429, f"Limite de {limite} demandes de conseils IA par jour atteinte. Réessaie demain.")
+    s = calculer_stats(db, user, annee, mois)
+    try:
+        texte, modele = generer_conseils(s, generer_recommandations(s), f"{annee}-{mois:02d}")
+    except ErreurIA as e:
+        raise HTTPException(502, str(e))
+    c = conseils_ia_du_mois(db, user, annee, mois)
+    if c is None:
+        c = ConseilIA(user_id=user.id, periode=f"{annee}-{mois:02d}", texte=texte, modele=modele)
+        db.add(c)
+    else:
+        c.texte, c.modele, c.date = texte, modele, datetime.utcnow()
+    db.flush()
+    journaliser(db, user, "generation", "conseils_ia", c.id, apres={"mois": c.periode, "modele": modele})
+    db.commit()
+    return conseils_ia_out(c)
 
 
 @app.get("/api/bilan/apercu", response_class=HTMLResponse)
